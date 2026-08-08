@@ -1,0 +1,57 @@
+# Bytecode und Pythons temporäre Dateien
+__pycache__/
+*.py[cod]
+*$py.class
+
+
+# Eigene Datein
+.obsidian/
+sources/
+notes/
+TODOS.md
+Thesis_Skelett.md
+
+
+# Virtuelle Umgebungen
+venv/
+env/
+.env/
+
+# Jupyter Notebooks Checkpoints
+.ipynb_checkpoints
+
+# Logs und temporäre Dateien
+*.log
+*.tmp
+*.bak
+
+# Editor- und IDE-Dateien
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Python Packaging
+*.egg-info/
+.eggs/
+dist/
+build/
+
+
+
+# Distribution Archivs
+*.tar.gz
+*.whl
+
+# Docker-bezogene Dateien (optional)
+docker-compose.override.yml
+
+# Secrets oder sensible lokale Konfigurationen
+*.env
+config.yaml
+
+# MacOS Dateien
+.DS_Store
+
+# Linux Swap Dateien
+*.swp

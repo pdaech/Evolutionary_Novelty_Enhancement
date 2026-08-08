@@ -1,0 +1,65 @@
+from pathlib import Path
+import torch
+from torch.utils.data import Dataset, DataLoader
+import numpy as np
+from PIL import Image
+import matplotlib.pyplot as plt
+
+def get_file_paths(path: Path, glob_pattern: str = "*.pt") -> list[Path]:
+    file_paths = list(path.glob(glob_pattern))
+    file_paths.sort(key=lambda p: int(p.name.split("_")[0].replace("g", "")))
+    return file_paths
+
+class EfficientTensorDataset(Dataset):
+    def __init__(self, file_paths: list[Path], device="cpu"):
+        self.file_paths = file_paths
+        self.device = device
+
+    def __len__(self):
+        return len(self.file_paths)
+
+    def __getitem__(self, idx):
+        tensor_path = self.file_paths[idx]
+        tensor = torch.load(tensor_path, map_location=self.device) 
+        tensor = torch.squeeze(tensor, dim=0)
+        gen_value = int(tensor_path.name.split("_")[0].replace("g", ""))
+        return tensor, gen_value
+
+
+def load_in_batches(tensor_dir: Path, batch_size: int = 32, num_workers: int = 2):
+    
+    file_paths = get_file_paths(tensor_dir, "*.pt")
+    dataset = EfficientTensorDataset(file_paths)
+    
+    
+    data_loader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=False, 
+        num_workers=num_workers,
+        pin_memory=False 
+    )
+    
+    embds = []
+    gen = []
+
+    
+    print(f"Starte paralleles Laden mit {num_workers} Workers...")
+    for batch_tensors, batch_gen in data_loader:
+        
+        embds.append(batch_tensors)
+        gen.extend(batch_gen.tolist())
+    print(embds[0].shape)
+    final_embds = torch.cat(embds, dim=0)
+    
+    return final_embds, gen
+
+def prep_pca(embds: torch.Tensor) -> np.ndarray:
+    
+    data_matrix = embds.numpy()
+    num_samples = data_matrix.shape[0]
+    num_features = data_matrix.shape[1] * data_matrix.shape[2] * data_matrix.shape[3]
+
+    data_2d = data_matrix.reshape(num_samples, num_features)
+    print(f"Shape Data: {data_2d.shape}")
+    return data_2d
