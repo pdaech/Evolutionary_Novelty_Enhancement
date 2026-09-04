@@ -1,11 +1,11 @@
+import io
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import torch
 from PIL import Image
-from typing import Optional, Dict
-import io
-import zipfile
 
 
 def _save_pil(
@@ -46,7 +46,7 @@ class Noise:
     blip2_embedding: torch.Tensor = None
     clip_embedding: torch.Tensor = None
     fitness: float = None
-    evaluation_scores: list[dict[str, float]] = field(default_factory=list)
+    evaluation_scores: list[dict[str, Any]] = field(default_factory=list)
     global_score: float = None
     prompt_fidelity: float = None
     diversity_score: float = None
@@ -121,8 +121,10 @@ class Noise:
                 )
 
             image = Image.fromarray(image_array)
-        except Exception as e:
-            raise Exception(f"Failed to convert initial noise to rgb image: {e}")
+        except (RuntimeError, TypeError, ValueError) as e:
+            raise RuntimeError(
+                f"Failed to convert initial noise to RGB image: {e}"
+            ) from e
 
         try:
             path = Path(filepath)
@@ -164,15 +166,19 @@ class Noise:
         path.mkdir(parents=True, exist_ok=True)
         torch.save(self.clip_embedding, f"{filepath}/clip_{self.filename}.pt")
 
-    def calculate_fitness(self) -> None:
+    def calculate_fitness(self, aggregation: str = "mean_history") -> None:
 
         if len(self.evaluation_scores) == 0:
             self.fitness = 0.0
-        elif len(self.evaluation_scores) == 1:
-            self.fitness = self.evaluation_scores[0]["score"]
-        else:
+        elif aggregation == "latest":
+            self.fitness = float(self.evaluation_scores[-1]["score"])
+        elif aggregation == "mean_history":
             score_values = [d["score"] for d in self.evaluation_scores]
             self.fitness = sum(score_values) / len(score_values)
+        else:
+            raise ValueError(
+                "fitness aggregation must be either 'latest' or 'mean_history'"
+            )
 
     def add_to_zip(self, zf: zipfile.ZipFile, folder_prefix: str = ""):
         """
@@ -180,21 +186,18 @@ class Noise:
         """
 
         if self.pil_image is not None:
-
             img_buffer = io.BytesIO()
             self.pil_image.save(img_buffer, format="JPEG")
             zip_path_img = f"{folder_prefix}/images/{self.filename}.JPEG"
             zf.writestr(zip_path_img, img_buffer.getvalue())
 
         if self.blip2_embedding is not None:
-
             emb_buffer = io.BytesIO()
             torch.save(self.blip2_embedding, emb_buffer)
             zip_path_blip = f"{folder_prefix}/blip2/blip2_{self.filename}.pt"
             zf.writestr(zip_path_blip, emb_buffer.getvalue())
 
         if self.initial_noise is not None:
-
             noise_buffer = io.BytesIO()
             torch.save(self.initial_noise, noise_buffer)
             zip_path_noise = f"{folder_prefix}/noise/{self.filename}.pt"

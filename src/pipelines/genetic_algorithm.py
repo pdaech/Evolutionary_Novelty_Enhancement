@@ -1,29 +1,33 @@
 import copy
-import logging
-import zipfile
-import os
 import gc
+import json
+import logging
+import os
 import random
+import zipfile
+from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Generator, Any
+from typing import Any
+
 import pandas as pd
 import torch
-import json
-from datetime import datetime
-from src.models import Noise
-from .pipeline import Pipeline
+
 from src.crossover.base_crossover import CrossoverFunction
 from src.evaluators.base_evaluator import Evaluator
+from src.evaluators.diversity_evaluator import DiversityEvaluator
+from src.evaluators.prompt_fidelity import PromptFidelityEvaluator
 from src.factorys import NoiseFactory
 from src.huggingface_models.base_strategy import (
-    GenerativModelStrategy,
-    EmbeddingModelStrategy,
     CaptionModelStrategy,
+    EmbeddingModelStrategy,
+    GenerativModelStrategy,
 )
+from src.models import Noise
 from src.mutators.base_mutator import MutationFunction
 from src.selector_functions.base_selectorf_unction import SelectorFunction
-from src.evaluators.prompt_fidelity import PromptFidelityEvaluator
-from src.evaluators.diversity_evaluator import DiversityEvaluator
+
+from .pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +42,16 @@ def cleanup_memory():
 
 
 class GeneticAlgorithmPipeline(Pipeline):
-
     def __init__(
         self,
         generative_model: GenerativModelStrategy,
-        embedding_model: EmbeddingModelStrategy,
+        embedding_model: EmbeddingModelStrategy | None,
         crossover_operation: CrossoverFunction,
         noise_factory: NoiseFactory,
         mutator: MutationFunction,
         selector: SelectorFunction,
         evaluator: Evaluator,
-        global_evaluator: Evaluator,
+        global_evaluator: Evaluator | None,
         prompt: str,
         experiment_id: str,
         num_generations: int,
@@ -60,6 +63,8 @@ class GeneticAlgorithmPipeline(Pipeline):
         caption_model: CaptionModelStrategy | None = None,
         initial_generation: list[Noise] | None = None,
         result_path: str = "0_results/simulations",
+        fitness_aggregation: str = "mean_history",
+        compute_auxiliary_metrics: bool = True,
     ):
         self.population = None
         self.generative_model = generative_model
@@ -79,9 +84,21 @@ class GeneticAlgorithmPipeline(Pipeline):
         self.mutator = mutator
         self.initial_generation = initial_generation
         self.batch_size = batch_size
+        if fitness_aggregation not in {"latest", "mean_history"}:
+            raise ValueError(
+                "fitness_aggregation must be either 'latest' or 'mean_history'"
+            )
+        self.fitness_aggregation = fitness_aggregation
+        self.compute_auxiliary_metrics = compute_auxiliary_metrics
         self.generations_done = 0
-        self.prompt_fidelity_evaluator = PromptFidelityEvaluator(prompt)
-        self.diversity_evaluator = DiversityEvaluator()
+        self.prompt_fidelity_evaluator = (
+            PromptFidelityEvaluator(prompt) if compute_auxiliary_metrics else None
+        )
+        self.diversity_evaluator = (
+            DiversityEvaluator()
+            if compute_auxiliary_metrics and embedding_model is not None
+            else None
+        )
         base_path = Path(os.environ["BASE_PATH"])
         self.name = f"{experiment_id}"
 
@@ -113,8 +130,17 @@ class GeneticAlgorithmPipeline(Pipeline):
             "crossover_rate": self.crossover_rate,
             "elitism_count": self.elite_size,
             "evaluator": type(self.evaluator).__name__,
+            "evaluator_config": self.evaluator.config_metadata(),
+            "global_evaluator": (
+                type(self.global_evaluator).__name__
+                if self.global_evaluator is not None
+                else None
+            ),
+            "fitness_aggregation": self.fitness_aggregation,
+            "compute_auxiliary_metrics": self.compute_auxiliary_metrics,
+            "generation_code_commit": os.environ.get("GENERATION_CODE_COMMIT"),
             "random_seed": torch.initial_seed(),
-            "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
+            "timestamp": datetime.now(UTC).isoformat(),
             "result_path": str(self.result_path),
             "stat_path": str(self.state_path),
         }
@@ -139,9 +165,17 @@ class GeneticAlgorithmPipeline(Pipeline):
             "score_value",
             "caption",
             "file_name",
+            "fitness_raw_response",
+            "fitness_parse_error",
         ]
         data_rows = []
         for candidate in self.population:
+            first_score = candidate.evaluation_scores[0]
+            current_score = candidate.evaluation_scores[-1]
+            if isinstance(candidate.global_score, dict):
+                global_score = candidate.global_score.get("score")
+            else:
+                global_score = candidate.global_score
             row = [
                 self.generations_done,
                 candidate.id,
@@ -150,13 +184,15 @@ class GeneticAlgorithmPipeline(Pipeline):
                 candidate.parent_1,
                 candidate.parent_2,
                 candidate.fitness,
-                candidate.global_score["score"],
+                global_score,
                 candidate.prompt_fidelity,
                 candidate.diversity_score,
-                candidate.evaluation_scores[0]["name"],
-                candidate.evaluation_scores[0]["score"],
+                first_score["name"],
+                first_score["score"],
                 getattr(candidate, "caption", ""),
                 candidate.filename,
+                current_score.get("raw_response"),
+                current_score.get("parse_error"),
             ]
             data_rows.append(row)
 
@@ -165,67 +201,93 @@ class GeneticAlgorithmPipeline(Pipeline):
             header_needed = True
         else:
             header_needed = False
-        try:
-            self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            new_data_df.to_csv(
-                self.state_path, mode="a", header=header_needed, index=False
-            )
-        except Exception as e:
-            logging.error(f"FEHLER beim Schreiben der CSV-Datei: {e}")
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        new_data_df.to_csv(self.state_path, mode="a", header=header_needed, index=False)
 
     def one_generation(self):
 
         pils = []
 
-        bc = 0
-        for batch in self.create_batches(
+        batches = self.create_batches(
             [candidate.initial_noise for candidate in self.population]
-        ):
-
+        )
+        for batch_index, batch in enumerate(batches):
             pil_images = self.generative_model.generate_batch(batch, self.prompt)
             pils.extend(pil_images)
-            print(f"Batch {bc} generiert")
-            bc += 1
+            print(f"Batch {batch_index} generiert")
         print(f"Menge der Biler {len(pils)}")
         embeddings = []
-        fidelity_scores = []
-        for batch in self.create_batches(pils):
-            batch_embeddings = self.embedding_model.batch_image_features_extraction(
-                batch
+        if self.embedding_model is not None:
+            for batch in self.create_batches(pils):
+                batch_embeddings = self.embedding_model.batch_image_features_extraction(
+                    batch
+                )
+                embeddings.extend(batch_embeddings)
+            print(f"Menge der Embeddings {len(embeddings)}")
+
+        if self.prompt_fidelity_evaluator is not None:
+            fidelity_scores = []
+            for batch in self.create_batches(pils):
+                fidelity_scores.extend(
+                    self.prompt_fidelity_evaluator.evaluate_batch(batch)
+                )
+        else:
+            fidelity_scores = [None] * len(pils)
+
+        # Release temporary SDXL allocations before the large VLM starts decoding.
+        cleanup_memory()
+
+        if self.evaluator.need() is None:
+            evaluation_inputs = pils
+        else:
+            if not embeddings:
+                raise RuntimeError(
+                    f"{type(self.evaluator).__name__} requires image embeddings, "
+                    "but no embedding model was configured"
+                )
+            evaluation_inputs = embeddings
+
+        self.evaluator.update(evaluation_inputs)
+        scores = self.evaluator.evaluate_batch(evaluation_inputs)
+
+        if len(scores) != len(self.population):
+            raise RuntimeError(
+                f"Evaluator returned {len(scores)} scores for "
+                f"{len(self.population)} candidates"
             )
 
-            batch_scores = self.prompt_fidelity_evaluator.evaluate_batch(batch)
-
-            embeddings.extend(batch_embeddings)
-            fidelity_scores.extend(batch_scores)
-        print(embeddings[0].shape)
-        print(f"Menge der Embeddings {len(embeddings)}")
-
-        self.evaluator.update(embeddings)
-        scores = self.evaluator.evaluate_batch(embeddings)
-
-        if self.generations_done == 0:
-            self.global_evaluator.update(embeddings)
-
-        global_scores = self.global_evaluator.evaluate_batch(embeddings)
+        if self.global_evaluator is not None:
+            if not embeddings:
+                raise RuntimeError("The global evaluator requires image embeddings")
+            if self.generations_done == 0:
+                self.global_evaluator.update(embeddings)
+            global_scores = self.global_evaluator.evaluate_batch(embeddings)
+        else:
+            global_scores = [None] * len(pils)
         print(f"Menge der Scores {len(scores)}")
 
-        diversity_score = self.diversity_evaluator.evalute_batch(embeddings)
+        diversity_score = (
+            self.diversity_evaluator.evalute_batch(embeddings)
+            if self.diversity_evaluator is not None
+            else None
+        )
         captions = []
         if self.caption_model is not None:
-
             for batch in self.create_batches(pils):
                 batch_captions = self.caption_model.caption_batch(batch)
                 captions.extend(batch_captions)
 
         for i, candidate in enumerate(self.population):
             candidate.pil_image = pils[i]
-            candidate.blip2_embedding = embeddings[i]
-            candidate.evaluation_scores.append(scores[i])
+            candidate.blip2_embedding = embeddings[i] if embeddings else None
+            if self.fitness_aggregation == "latest":
+                candidate.evaluation_scores = [scores[i]]
+            else:
+                candidate.evaluation_scores.append(scores[i])
             candidate.global_score = global_scores[i]
             candidate.prompt_fidelity = fidelity_scores[i]
             candidate.diversity_score = diversity_score
-            candidate.calculate_fitness()
+            candidate.calculate_fitness(self.fitness_aggregation)
             if self.caption_model is not None:
                 candidate.caption = captions[i]
 
@@ -241,25 +303,21 @@ class GeneticAlgorithmPipeline(Pipeline):
         for candidate in new_gen:
             candidate.end_generation = self.generations_done
         while len(new_gen) < self.population_size:
-
             parent1 = self.selection_function.select(self.population)
             parent2 = self.selection_function.select(self.population)
 
             if random.random() > self.crossover_rate:
-
                 child = copy.deepcopy(parent1)
                 child.end_generation = self.generations_done
                 child.id = self.noise_factory._create_id()
                 log_entry = "Cross"
                 if random.random() < self.initial_mutation_rate:
-
                     child.initial_noise = self.mutator.mutate(child.initial_noise)
                     child.mutate = True
                     log_entry += "+Mut"
                 new_gen.append(child)
                 action_log.append(log_entry)
             else:
-
                 child_noise = self.crossover_operation.crossover(
                     parent1.initial_noise, parent2.initial_noise
                 )
@@ -271,7 +329,6 @@ class GeneticAlgorithmPipeline(Pipeline):
                 child.crossover = True
                 log_entry = "Cross"
                 if random.random() < self.initial_mutation_rate:
-
                     child.initial_noise = self.mutator.mutate(child.initial_noise)
                     child.mutate = True
                     log_entry += "+Mut"
@@ -294,7 +351,6 @@ class GeneticAlgorithmPipeline(Pipeline):
             self.zip_path, "a", compression=zipfile.ZIP_DEFLATED
         ) as zf:
             for candidate in self.population:
-
                 candidate.add_to_zip(zf, folder_prefix="")
                 # candidate.save_pil_image(self.result_path / "images")
                 # candidate.save_blip2(self.result_path / "blip2")

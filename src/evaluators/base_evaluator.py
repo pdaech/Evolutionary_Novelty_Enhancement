@@ -1,10 +1,10 @@
-from abc import ABC, abstractmethod, abstractclassmethod
-from typing import Dict, Any, List, Optional, Union, Type
+from abc import ABC, abstractmethod
+from typing import Any
+
 import torch
 
 
 class Evaluator(ABC):
-
     @abstractmethod
     def evaluate(self, image_features: torch.Tensor, *args, **kwargs) -> float:
         raise NotImplementedError
@@ -22,3 +22,7 @@ class Evaluator(ABC):
 
     def update(self, population: list[torch.Tensor]) -> None:
         pass
+
+    def config_metadata(self) -> dict[str, Any]:
+        """Return JSON-serializable evaluator details for experiment provenance."""
+        return {}
