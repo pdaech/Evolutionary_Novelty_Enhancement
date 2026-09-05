@@ -1,5 +1,7 @@
 import random
+from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
 from src.evaluators.gemma_creativity_evaluator import (
@@ -7,7 +9,25 @@ from src.evaluators.gemma_creativity_evaluator import (
     DEFAULT_MODEL_REVISION,
     GemmaCreativityEvaluator,
     _parse_score,
+    validate_gemma_runtime,
 )
+
+
+def _fake_torch(version: str, capability: tuple[int, int]):
+    cuda = SimpleNamespace(
+        is_available=lambda: True,
+        get_device_capability=lambda index: capability,
+    )
+    return SimpleNamespace(__version__=version, cuda=cuda)
+
+
+def test_a100_rejects_torch_28_before_model_loading():
+    with pytest.raises(RuntimeError, match="A100/SM80 requires PyTorch >=2.9"):
+        validate_gemma_runtime(_fake_torch("2.8.0+cu128", (8, 0)))
+
+
+def test_a100_accepts_torch_29():
+    validate_gemma_runtime(_fake_torch("2.9.1+cu128", (8, 0)))
 
 
 def test_parse_score_accepts_json_and_fenced_json():

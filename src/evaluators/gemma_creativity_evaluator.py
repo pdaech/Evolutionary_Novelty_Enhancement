@@ -22,6 +22,28 @@ DEFAULT_CREATIVITY_PROMPT = (
 )
 
 
+def validate_gemma_runtime(torch_module: Any) -> None:
+    """Fail before model loading when grouped MoE cannot run on the allocated GPU."""
+    if not torch_module.cuda.is_available():
+        return
+    capability = tuple(torch_module.cuda.get_device_capability(0))
+    version_match = re.match(r"^(\d+)\.(\d+)", str(torch_module.__version__))
+    if version_match is None:
+        raise RuntimeError(f"Cannot parse PyTorch version: {torch_module.__version__}")
+    torch_release = tuple(int(part) for part in version_match.groups())
+    if capability < (8, 0):
+        raise RuntimeError(
+            "Gemma 4 grouped-MoE inference requires a GPU with compute capability "
+            f"8.0 or newer; allocated device 0 reports {capability[0]}.{capability[1]}"
+        )
+    if capability < (9, 0) and torch_release < (2, 9):
+        raise RuntimeError(
+            "Gemma 4 grouped-MoE inference on an A100/SM80 requires PyTorch >=2.9; "
+            f"found {torch_module.__version__}. Install torch==2.9.1 and "
+            "torchvision==0.24.1 from the CUDA 12.8 wheel index."
+        )
+
+
 class GemmaCreativityEvaluator(Evaluator):
     """Use Gemma 4's image creativity rating as a maximization objective."""
 
@@ -53,6 +75,7 @@ class GemmaCreativityEvaluator(Evaluator):
             raise ValueError(f"Unknown torch dtype: {dtype}")
         if max_new_tokens < 1:
             raise ValueError("max_new_tokens must be positive")
+        validate_gemma_runtime(torch)
 
         options: dict[str, Any] = {"device_map": device_map}
         if revision:

@@ -12,9 +12,9 @@ dependencies = [
     "pillow>=11.3.0",
     "python-dotenv>=1.1.1",
     "scikit-learn>=1.7,<2",
-    "torch>=2.8,<2.9",
+    "torch>=2.9,<2.10",
     "torch-kde>=0.1.5",
-    "torchvision>=0.23,<0.24",
+    "torchvision>=0.24,<0.25",
     "transformers>=5.5,<5.6",
 ]
 

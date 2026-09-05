@@ -11,6 +11,7 @@ from src.crossover import UniformCrossover
 from src.evaluators.gemma_creativity_evaluator import (
     DEFAULT_MODEL_REVISION,
     GemmaCreativityEvaluator,
+    validate_gemma_runtime,
 )
 from src.evaluators.local_max_mean_divergence_evaluator import (
     LocalMaxMeanDivergenceEvaluator,
@@ -52,6 +53,10 @@ def main(
     gemma_max_new_tokens: int,
 ):
 
+    normalized_evaluator = evaluator_name.strip().lower().replace("_", "-")
+    if normalized_evaluator in {"gemma", "gemma4", "gemma-creativity"}:
+        validate_gemma_runtime(torch)
+
     selector = TournamentSelector(tournament_size=3)
     mutator = UniformGaussianMutator(mutation_rate=0.1, mutation_strengh=0.2)
     crossover = UniformCrossover()
@@ -62,7 +67,6 @@ def main(
 
     sdxl = ml.load_sdxl()
 
-    normalized_evaluator = evaluator_name.strip().lower().replace("_", "-")
     if normalized_evaluator in {"gemma", "gemma4", "gemma-creativity"}:
         evaluator = GemmaCreativityEvaluator(
             model_id=gemma_model,

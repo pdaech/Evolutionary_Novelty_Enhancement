@@ -27,12 +27,15 @@ the project's one-A100-80-GB profile; verify it with the small smoke test before
 ## Cluster setup
 
 Use a dedicated environment and persistent Hugging Face cache on PanFS, not the home directory.
-The project requires Python 3.12, the PyTorch 2.8/torchvision 0.23 CUDA build, Transformers 5.5,
+The project requires Python 3.12, PyTorch 2.9.1/torchvision 0.24.1 with CUDA 12.8, Transformers 5.5,
 and Diffusers 0.37. Install it into a dedicated environment rather than the completed VLM
 evaluation environment.
-For example, after installing the correct PyTorch wheel for the cluster:
+PyTorch 2.8 cannot run Gemma 4's grouped-MoE kernel on an A100. Install the official matched
+wheel pair before installing the project:
 
 ```bash
+"$PYTHON_EXE" -m pip install torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu128
+
 "$PYTHON_EXE" -m pip install -e '.[test]'
 ```
 
