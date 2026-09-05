@@ -1,37 +1,36 @@
 import logging
-import os
-from dataclasses import dataclass
-from threading import Thread, Lock
+from threading import Lock
+from typing import ClassVar
 
 import torch
 
 from src.huggingface_models.image_embedding.blip2_embedding import Blip2EmbeddingModel
 from src.huggingface_models.image_embedding.clip_embedding import ClipEmbeddingModel
-from src.huggingface_models.image_to_text.blip2_image_captioning import (
-    Blip2CaptioningModel,
-)
 from src.huggingface_models.text_to_image.stable_diffusion_xl import (
-    StableDiffusionXLRefinerStrategy,
     StableDiffusionXLModel,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class ModelLoader(object):
-    _instances = {}
+class ModelLoader:
+    _instances: ClassVar[dict] = {}
     _lock: Lock = Lock()
 
     def __new__(cls, cache_dir: str):
         with cls._lock:
             if cls not in cls._instances:
-                instance = super(ModelLoader, cls).__new__(cls)
+                instance = super().__new__(cls)
                 cls._instances[cls] = instance
         return cls._instances[cls]
 
     def __init__(self, cache_dir: str):
 
         if hasattr(self, "_initialized") and self._initialized:
+            if cache_dir != self.cache_dir:
+                raise ValueError(
+                    "ModelLoader is already initialized with a different cache_dir"
+                )
             return
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.dtype = torch.float16 if torch.cuda.is_available() else torch.float32
@@ -39,10 +38,17 @@ class ModelLoader(object):
         self.sdxl = None
         self.blip2_embeddings = None
         self.clip_embeddings = None
+        self._initialized = True
 
-    def load_sdxl(self) -> StableDiffusionXLModel:
+    def load_sdxl(self, revision: str | None = None) -> StableDiffusionXLModel:
         if self.sdxl is None:
-            self.sdxl = StableDiffusionXLModel(self.device, self.dtype, self.cache_dir)
+            self.sdxl = StableDiffusionXLModel(
+                self.device, self.dtype, self.cache_dir, revision=revision
+            )
+        elif self.sdxl.requested_revision != revision:
+            raise ValueError(
+                "SDXL is already loaded with a different requested revision"
+            )
 
         return self.sdxl
 

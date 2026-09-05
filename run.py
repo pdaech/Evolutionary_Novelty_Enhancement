@@ -18,6 +18,7 @@ from src.evaluators.local_max_mean_divergence_evaluator import (
 )
 from src.factorys import NoiseFactory
 from src.huggingface_models import ModelLoader
+from src.model_revisions import DEFAULT_SDXL_REVISION, full_model_revision
 from src.mutators.uniform_gaussian_mutator import UniformGaussianMutator
 from src.pipelines.genetic_algorithm import GeneticAlgorithmPipeline
 from src.selector_functions.tournament_selector import TournamentSelector
@@ -51,8 +52,10 @@ def main(
     gemma_model: str,
     gemma_revision: str,
     gemma_max_new_tokens: int,
+    sdxl_revision: str = DEFAULT_SDXL_REVISION,
 ):
 
+    full_model_revision(sdxl_revision)
     normalized_evaluator = evaluator_name.strip().lower().replace("_", "-")
     if normalized_evaluator in {"gemma", "gemma4", "gemma-creativity"}:
         validate_gemma_runtime(torch)
@@ -65,7 +68,7 @@ def main(
     cache_dir = _huggingface_cache_dir()
     ml = ModelLoader(cache_dir=cache_dir)
 
-    sdxl = ml.load_sdxl()
+    sdxl = ml.load_sdxl(revision=sdxl_revision)
 
     if normalized_evaluator in {"gemma", "gemma4", "gemma-creativity"}:
         evaluator = GemmaCreativityEvaluator(
@@ -151,4 +154,5 @@ if __name__ == "__main__":
         gemma_model=parsed_args.gemma_model,
         gemma_revision=parsed_args.gemma_revision or DEFAULT_MODEL_REVISION,
         gemma_max_new_tokens=parsed_args.gemma_max_new_tokens,
+        sdxl_revision=parsed_args.sdxl_revision,
     )

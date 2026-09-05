@@ -43,6 +43,7 @@ GEMMA_REVISION="${GEMMA_REVISION:-4d7ae4984b7db7de8f8457170b3f1a419ee76d52}"
   --num_generations "${NUM_GENERATIONS:-30}" \
   --population_size "${POPULATION_SIZE:-100}" \
   --batch_size "${SDXL_BATCH_SIZE:-1}" \
+  --sdxl_revision "${SDXL_REVISION:-462165984030d82259a11f4367a4eed129e94a7b}" \
   --evaluator gemma-creativity \
   --gemma_model "${GEMMA_MODEL:-google/gemma-4-26B-A4B-it}" \
   --gemma_revision "$GEMMA_REVISION" \

@@ -5,6 +5,7 @@ import torch
 from diffusers import StableDiffusionXLPipeline
 
 from src.huggingface_models.base_strategy import GenerativModelStrategy
+from src.model_revisions import load_pinned_pipeline
 
 
 class StableDiffusionXLModel(GenerativModelStrategy):
@@ -17,6 +18,7 @@ class StableDiffusionXLModel(GenerativModelStrategy):
         guidance_scale: float = 7.0,
         compile_pipeline: bool = False,
         model: str = "stabilityai/stable-diffusion-xl-base-1.0",
+        revision: str | None = None,
     ) -> None:
 
         self.num_inference_steps = num_inference_steps
@@ -24,12 +26,31 @@ class StableDiffusionXLModel(GenerativModelStrategy):
         self.model_id = model
         self.dtype = str(dtype)
         self.device = str(device)
-        self.model = StableDiffusionXLPipeline.from_pretrained(
-            model,
-            torch_dtype=dtype,
-            cache_dir=cache_dir,
-            use_safetensors=True,
-        )
+        self.requested_revision = revision
+        if revision is not None:
+            self.model, self._revision_metadata = load_pinned_pipeline(
+                StableDiffusionXLPipeline,
+                model_id=model,
+                revision=revision,
+                cache_dir=cache_dir,
+                dtype=dtype,
+            )
+        else:
+            # Preserve unpinned loading for existing library/refiner callers.
+            self.model = StableDiffusionXLPipeline.from_pretrained(
+                model,
+                torch_dtype=dtype,
+                cache_dir=cache_dir,
+                use_safetensors=True,
+            )
+            pipeline_config = getattr(self.model, "config", None)
+            commit = getattr(pipeline_config, "_commit_hash", None)
+            self._revision_metadata = {
+                "requested_revision": None,
+                "resolved_revision": str(commit) if commit is not None else None,
+                "revision_source": "pipeline_config" if commit is not None else None,
+                "snapshot_path": None,
+            }
         self.model.set_progress_bar_config(leave=False)
         self.model.set_progress_bar_config(disable=True)
         self.model.to(device=device)
@@ -39,13 +60,9 @@ class StableDiffusionXLModel(GenerativModelStrategy):
             )
 
     def config_metadata(self) -> dict:
-        pipeline_config = getattr(self.model, "config", None)
-        resolved_revision = getattr(pipeline_config, "_commit_hash", None)
         return {
             "model_id": self.model_id,
-            "resolved_revision": (
-                str(resolved_revision) if resolved_revision is not None else None
-            ),
+            **self._revision_metadata,
             "dtype": self.dtype,
             "device": self.device,
             "num_inference_steps": self.num_inference_steps,

@@ -1,5 +1,7 @@
 import argparse
 
+from src.model_revisions import DEFAULT_SDXL_REVISION, full_model_revision
+
 
 def args():
 
@@ -34,6 +36,12 @@ def args():
     parser.add_argument("--num_generations", type=int, default=30)
     parser.add_argument("--population_size", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=5)
+    parser.add_argument(
+        "--sdxl_revision",
+        type=full_model_revision,
+        default=DEFAULT_SDXL_REVISION,
+        help="Full SDXL commit hash; defaults to the successful smoke-test snapshot",
+    )
     parser.add_argument(
         "--gemma_model",
         type=str,

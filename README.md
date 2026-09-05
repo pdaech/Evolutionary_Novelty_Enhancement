@@ -45,6 +45,16 @@ artifact used in the successful human-rating comparison. The requested and resol
 are written to the experiment JSON. `HF_HOME` follows the standard Hub layout and model
 repositories are reused from `$HF_HOME/hub`.
 
+SDXL is also pinned: `--sdxl_revision` (Slurm variable `SDXL_REVISION`) defaults to
+`462165984030d82259a11f4367a4eed129e94a7b`, the snapshot observed in the successful smoke
+run. Only a full commit hash is accepted. Diffusers downloads/reuses the required pipeline
+files; the program verifies the returned cache snapshot matches that hash and loads exclusively
+from that directory. It records `requested_revision`, `resolved_revision`, `revision_source`,
+and `snapshot_path` under `generative_model_config` in the experiment JSON. This works even
+when Diffusers omits `_commit_hash` from its pipeline configuration. A mismatch stops loading.
+The command-line run always pins SDXL; older library callers can still load an unpinned model
+by leaving the optional class/loader revision argument unset.
+
 Start with a small systems smoke test:
 
 ```bash
@@ -58,6 +68,7 @@ export NUM_GENERATIONS=1
 export POPULATION_SIZE=4
 export SDXL_BATCH_SIZE=1
 export GEMMA_REVISION=4d7ae4984b7db7de8f8457170b3f1a419ee76d52
+export SDXL_REVISION=462165984030d82259a11f4367a4eed129e94a7b
 
 mkdir -p "$BASE_PATH"
 sbatch --export=ALL cluster/run_gemma_creativity.sbatch
@@ -66,6 +77,14 @@ sbatch --export=ALL cluster/run_gemma_creativity.sbatch
 The Slurm entry point refuses a dirty source checkout. After the smoke test, submit a new
 experiment id with the intended population and generation counts. Experiment directories are
 claimed atomically and an existing id is rejected because automatic resume is not implemented.
+
+After pulling this update, run the unit tests and repeat the small smoke test with a fresh
+experiment id. Preserve earlier outputs: the previously successful run's null SDXL revision
+is part of its original audit trail. Confirm the new JSON has the same full SDXL commit in
+both requested/resolved fields, with `revision_source` equal to `huggingface_cache_snapshot`,
+and that the CSV/ZIP again contain eight observations. Record the working environment for the
+team beside the run using `python -m pip freeze` from the dedicated environment; a complete
+tested cluster environment lock has not yet been committed.
 
 ## Outputs and audit trail
 
@@ -79,7 +98,7 @@ Each run writes a same-stem ZIP, CSV, and JSON below
   `fitness_parse_error`. If a response cannot be used, the run stops and writes its response,
   reason, candidate, generation, and image hash to `<experiment>.fitness_failures.jsonl`.
 - The JSON records the exact prompt, requested/resolved Gemma revision, decoding settings, SDXL
-  settings/resolved revision, software versions, hardware, seed, fitness aggregation, generator
+  settings/requested and resolved revisions, software versions, hardware, seed, fitness aggregation, generator
   Git commit, and evaluator class.
 
 Run unit checks without downloading Gemma:
