@@ -1,3 +1,6 @@
+from importlib.metadata import PackageNotFoundError, version
+
+import PIL
 import torch
 from diffusers import StableDiffusionXLPipeline
 
@@ -5,7 +8,6 @@ from src.huggingface_models.base_strategy import GenerativModelStrategy
 
 
 class StableDiffusionXLModel(GenerativModelStrategy):
-
     def __init__(
         self,
         device: str,
@@ -19,6 +21,9 @@ class StableDiffusionXLModel(GenerativModelStrategy):
 
         self.num_inference_steps = num_inference_steps
         self.guidance_scale = guidance_scale
+        self.model_id = model
+        self.dtype = str(dtype)
+        self.device = str(device)
         self.model = StableDiffusionXLPipeline.from_pretrained(
             model,
             torch_dtype=dtype,
@@ -32,6 +37,25 @@ class StableDiffusionXLModel(GenerativModelStrategy):
             self.model.unet = torch.compile(
                 self.model.unet, mode="reduce-overhead", fullgraph=True
             )
+
+    def config_metadata(self) -> dict:
+        pipeline_config = getattr(self.model, "config", None)
+        resolved_revision = getattr(pipeline_config, "_commit_hash", None)
+        return {
+            "model_id": self.model_id,
+            "resolved_revision": (
+                str(resolved_revision) if resolved_revision is not None else None
+            ),
+            "dtype": self.dtype,
+            "device": self.device,
+            "num_inference_steps": self.num_inference_steps,
+            "guidance_scale": self.guidance_scale,
+            "software": {
+                "torch": str(torch.__version__),
+                "diffusers": _package_version("diffusers"),
+                "pillow": str(PIL.__version__),
+            },
+        }
 
     def generate(self, noise_emds: torch.Tensor, prompt: str):
 
@@ -62,7 +86,6 @@ class StableDiffusionXLModel(GenerativModelStrategy):
 
 
 class StableDiffusionXLRefinerStrategy(StableDiffusionXLModel):
-
     def __init__(
         self,
         device: torch.device,
@@ -134,3 +157,10 @@ class StableDiffusionXLRefinerStrategy(StableDiffusionXLModel):
             image=images,
         ).images
         return image
+
+
+def _package_version(name: str) -> str | None:
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return None

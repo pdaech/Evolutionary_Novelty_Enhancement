@@ -1,5 +1,5 @@
-import copy
 import gc
+import hashlib
 import json
 import logging
 import os
@@ -106,10 +106,17 @@ class GeneticAlgorithmPipeline(Pipeline):
         self.zip_path = self.result_path / f"{self.name}.zip"
         self.state_path = self.result_path / f"{self.name}.csv"
         self.config_path = self.result_path / f"{self.name}.json"
+        self.fitness_failure_path = (
+            self.result_path / f"{self.name}.fitness_failures.jsonl"
+        )
 
-        if not self.initial_generation and self.zip_path.exists():
-            logger.warning(f"Lösche alte Ergebnis-Datei: {self.zip_path}")
-            os.remove(self.zip_path)
+        try:
+            self.result_path.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"Refusing to reuse experiment output directory {self.result_path}. "
+                "Choose a new experiment id; automatic resume is not implemented."
+            ) from exc
 
     def create_batches(self, embeds: list[Any]) -> Generator[list[Any], None, None]:
         num_samples = len(embeds)
@@ -123,6 +130,11 @@ class GeneticAlgorithmPipeline(Pipeline):
             "batch_size": self.batch_size,
             "prompt": self.prompt,
             "generative_model": type(self.generative_model).__name__,
+            "generative_model_config": (
+                self.generative_model.config_metadata()
+                if hasattr(self.generative_model, "config_metadata")
+                else {}
+            ),
             "selector": type(self.selection_function).__name__,
             "mutator": type(self.mutator).__name__,
             "crossover_function": type(self.crossover_operation).__name__,
@@ -204,6 +216,32 @@ class GeneticAlgorithmPipeline(Pipeline):
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         new_data_df.to_csv(self.state_path, mode="a", header=header_needed, index=False)
 
+    def save_fitness_failures(self, scores: list[dict[str, Any]]) -> None:
+        """Persist unusable VLM responses before failing the generation."""
+        timestamp = datetime.now(UTC).isoformat()
+        with self.fitness_failure_path.open("a", encoding="utf-8") as handle:
+            for candidate, score in zip(self.population, scores, strict=True):
+                if score.get("parse_error") is None and score.get("score") is not None:
+                    continue
+                image_hash = (
+                    hashlib.sha256(candidate.jpeg_artifact).hexdigest()
+                    if candidate.jpeg_artifact is not None
+                    else None
+                )
+                record = {
+                    "timestamp": timestamp,
+                    "generation": self.generations_done,
+                    "candidate_id": candidate.id,
+                    "score_name": score.get("name"),
+                    "score": score.get("score"),
+                    "raw_response": score.get("raw_response"),
+                    "parse_error": score.get("parse_error") or "missing_score",
+                    "content_sha256": image_hash,
+                }
+                handle.write(
+                    json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+                )
+
     def one_generation(self):
 
         pils = []
@@ -216,6 +254,21 @@ class GeneticAlgorithmPipeline(Pipeline):
             pils.extend(pil_images)
             print(f"Batch {batch_index} generiert")
         print(f"Menge der Biler {len(pils)}")
+        if len(pils) != len(self.population):
+            raise RuntimeError(
+                f"Generator returned {len(pils)} images for "
+                f"{len(self.population)} candidates"
+            )
+
+        evaluator_need = self.evaluator.need()
+        if evaluator_need is None:
+            for candidate, image in zip(self.population, pils, strict=True):
+                candidate.set_scored_jpeg(image)
+            pils = [candidate.pil_image for candidate in self.population]
+        else:
+            for candidate, image in zip(self.population, pils, strict=True):
+                candidate.set_pil_image(image)
+
         embeddings = []
         if self.embedding_model is not None:
             for batch in self.create_batches(pils):
@@ -237,7 +290,7 @@ class GeneticAlgorithmPipeline(Pipeline):
         # Release temporary SDXL allocations before the large VLM starts decoding.
         cleanup_memory()
 
-        if self.evaluator.need() is None:
+        if evaluator_need is None:
             evaluation_inputs = pils
         else:
             if not embeddings:
@@ -254,6 +307,24 @@ class GeneticAlgorithmPipeline(Pipeline):
             raise RuntimeError(
                 f"Evaluator returned {len(scores)} scores for "
                 f"{len(self.population)} candidates"
+            )
+        invalid_scores = [
+            score
+            for score in scores
+            if score.get("parse_error") is not None or score.get("score") is None
+        ]
+        if invalid_scores:
+            self.save_fitness_failures(scores)
+            reasons = sorted(
+                {
+                    str(score.get("parse_error") or "missing_score")
+                    for score in invalid_scores
+                }
+            )
+            raise RuntimeError(
+                "Gemma creativity evaluation returned unusable scores; "
+                f"details were written to {self.fitness_failure_path}. "
+                f"Reasons: {', '.join(reasons)}"
             )
 
         if self.global_evaluator is not None:
@@ -278,7 +349,6 @@ class GeneticAlgorithmPipeline(Pipeline):
                 captions.extend(batch_captions)
 
         for i, candidate in enumerate(self.population):
-            candidate.pil_image = pils[i]
             candidate.blip2_embedding = embeddings[i] if embeddings else None
             if self.fitness_aggregation == "latest":
                 candidate.evaluation_scores = [scores[i]]
@@ -307,10 +377,16 @@ class GeneticAlgorithmPipeline(Pipeline):
             parent2 = self.selection_function.select(self.population)
 
             if random.random() > self.crossover_rate:
-                child = copy.deepcopy(parent1)
+                child = self.noise_factory.create_noise_from_noise(
+                    parent1.initial_noise.clone()
+                )
+                child.start_generation = self.generations_done
                 child.end_generation = self.generations_done
-                child.id = self.noise_factory._create_id()
-                log_entry = "Cross"
+                child.parent_1 = parent1.id
+                child.parent_2 = ""
+                child.crossover = False
+                child.mutate = False
+                log_entry = "Copy"
                 if random.random() < self.initial_mutation_rate:
                     child.initial_noise = self.mutator.mutate(child.initial_noise)
                     child.mutate = True
@@ -327,6 +403,7 @@ class GeneticAlgorithmPipeline(Pipeline):
                 child.parent_1 = parent1.id
                 child.parent_2 = parent2.id
                 child.crossover = True
+                child.mutate = False
                 log_entry = "Cross"
                 if random.random() < self.initial_mutation_rate:
                     child.initial_noise = self.mutator.mutate(child.initial_noise)

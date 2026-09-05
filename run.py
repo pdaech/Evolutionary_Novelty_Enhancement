@@ -1,13 +1,17 @@
 import logging
 import os
 import random
+from pathlib import Path
 
 import torch
 from diffusers.utils.logging import disable_progress_bar
 from dotenv import load_dotenv
 
 from src.crossover import UniformCrossover
-from src.evaluators.gemma_creativity_evaluator import GemmaCreativityEvaluator
+from src.evaluators.gemma_creativity_evaluator import (
+    DEFAULT_MODEL_REVISION,
+    GemmaCreativityEvaluator,
+)
 from src.evaluators.local_max_mean_divergence_evaluator import (
     LocalMaxMeanDivergenceEvaluator,
 )
@@ -21,6 +25,18 @@ from src.utils.arg_parser import args
 logging.basicConfig(level=os.environ.get("LOGLEVEL", "INFO"))
 
 
+def _huggingface_cache_dir() -> str | None:
+    """Resolve the Hub repository cache without shadowing ``$HF_HOME/hub``."""
+    hub_cache = os.environ.get("HF_HUB_CACHE")
+    if hub_cache:
+        return hub_cache
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return str(Path(hf_home) / "hub")
+    legacy_cache = os.environ.get("HF_CACHE")
+    return legacy_cache or None
+
+
 def main(
     experiment_id: str,
     directory: str,
@@ -32,7 +48,7 @@ def main(
     evaluator_name: str,
     seed: int,
     gemma_model: str,
-    gemma_revision: str | None,
+    gemma_revision: str,
     gemma_max_new_tokens: int,
 ):
 
@@ -41,7 +57,7 @@ def main(
     crossover = UniformCrossover()
 
     noise_factory = NoiseFactory()
-    cache_dir = os.environ.get("HF_HOME", os.environ.get("HF_CACHE", ""))
+    cache_dir = _huggingface_cache_dir()
     ml = ModelLoader(cache_dir=cache_dir)
 
     sdxl = ml.load_sdxl()
@@ -53,7 +69,6 @@ def main(
             revision=gemma_revision,
             cache_dir=cache_dir or None,
             max_new_tokens=gemma_max_new_tokens,
-            seed=seed,
         )
         global_evaluator = None
         embed = None
@@ -130,6 +145,6 @@ if __name__ == "__main__":
         evaluator_name=parsed_args.evaluator,
         seed=seed,
         gemma_model=parsed_args.gemma_model,
-        gemma_revision=parsed_args.gemma_revision,
+        gemma_revision=parsed_args.gemma_revision or DEFAULT_MODEL_REVISION,
         gemma_max_new_tokens=parsed_args.gemma_max_new_tokens,
     )

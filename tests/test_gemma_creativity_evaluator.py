@@ -1,8 +1,10 @@
-import pytest
+import random
+
 from PIL import Image
 
 from src.evaluators.gemma_creativity_evaluator import (
     DEFAULT_CREATIVITY_PROMPT,
+    DEFAULT_MODEL_REVISION,
     GemmaCreativityEvaluator,
     _parse_score,
 )
@@ -26,35 +28,42 @@ def test_evaluate_routes_greedy_generation_options_and_image():
             return [{"generated_text": '{"score": 4.5}'}]
 
     evaluator = object.__new__(GemmaCreativityEvaluator)
-    evaluator.seed = 123
     evaluator.prompt = DEFAULT_CREATIVITY_PROMPT
     evaluator.max_new_tokens = 64
     evaluator._pipeline = RecordingPipeline()
-    seeds = []
-    evaluator._set_seed = seeds.append
 
+    random.seed(9876)
+    random_state = random.getstate()
     result = evaluator.evaluate(Image.new("RGB", (4, 4), color="white"))
 
     assert result["score"] == 4.5
     assert result["raw_response"] == '{"score": 4.5}'
-    assert seeds == [123]
     assert calls["generate_kwargs"] == {"max_new_tokens": 64, "do_sample": False}
     content = calls["text"][0]["content"]
     assert content[0]["type"] == "image"
     assert content[1] == {"type": "text", "text": DEFAULT_CREATIVITY_PROMPT}
+    assert random.getstate() == random_state
 
 
-def test_evaluate_fails_closed_on_invalid_rating():
+def test_evaluate_returns_invalid_rating_for_pipeline_audit():
     class InvalidPipeline:
         def __call__(self, **kwargs):
             return [{"generated_text": '{"score": 0}'}]
 
     evaluator = object.__new__(GemmaCreativityEvaluator)
-    evaluator.seed = 123
     evaluator.prompt = DEFAULT_CREATIVITY_PROMPT
     evaluator.max_new_tokens = 64
     evaluator._pipeline = InvalidPipeline()
-    evaluator._set_seed = lambda seed: None
 
-    with pytest.raises(ValueError, match="score_out_of_range"):
-        evaluator.evaluate(Image.new("RGB", (4, 4), color="white"))
+    result = evaluator.evaluate(Image.new("RGB", (4, 4), color="white"))
+
+    assert result == {
+        "name": "Gemma4Creativity",
+        "score": 0.0,
+        "raw_response": '{"score": 0}',
+        "parse_error": "score_out_of_range",
+    }
+
+
+def test_scientific_default_pins_validated_model_revision():
+    assert DEFAULT_MODEL_REVISION == "4d7ae4984b7db7de8f8457170b3f1a419ee76d52"

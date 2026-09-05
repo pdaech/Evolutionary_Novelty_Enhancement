@@ -13,6 +13,7 @@ from PIL import Image
 from src.evaluators.base_evaluator import Evaluator
 
 DEFAULT_MODEL_ID = "google/gemma-4-26B-A4B-it"
+DEFAULT_MODEL_REVISION = "4d7ae4984b7db7de8f8457170b3f1a419ee76d52"
 DEFAULT_CREATIVITY_PROMPT = (
     "How creative do you find the image? "
     "Use a continuous score from 1 to 5, where higher scores mean that you find "
@@ -31,21 +32,21 @@ class GemmaCreativityEvaluator(Evaluator):
     def __init__(
         self,
         model_id: str = DEFAULT_MODEL_ID,
-        revision: str | None = None,
+        revision: str = DEFAULT_MODEL_REVISION,
         cache_dir: str | None = None,
         dtype: str = "bfloat16",
         device_map: str = "auto",
         max_new_tokens: int = 64,
-        seed: int = 2025,
         prompt: str = DEFAULT_CREATIVITY_PROMPT,
     ) -> None:
         try:
             import torch
             import transformers
-            from transformers import pipeline, set_seed
+            from transformers import pipeline
         except ImportError as exc:
             raise RuntimeError(
-                "Gemma creativity fitness requires torch, transformers>=5.5, and accelerate"
+                "Gemma creativity fitness requires torch, torchvision, "
+                "transformers>=5.5,<5.6, and accelerate"
             ) from exc
 
         if not hasattr(torch, dtype):
@@ -71,9 +72,7 @@ class GemmaCreativityEvaluator(Evaluator):
         self.dtype = dtype
         self.device_map = device_map
         self.max_new_tokens = max_new_tokens
-        self.seed = seed
         self.prompt = prompt
-        self._set_seed = set_seed
         self._pipeline = pipeline("image-text-to-text", model=model_id, **options)
         self._resolved_revision = _resolved_revision(self._pipeline)
         self._hardware = _hardware_metadata(self._pipeline, torch)
@@ -93,7 +92,6 @@ class GemmaCreativityEvaluator(Evaluator):
         }
 
     def evaluate(self, image: Image.Image, *args, **kwargs) -> dict[str, Any]:
-        self._set_seed(self.seed)
         messages = [
             {
                 "role": "user",
@@ -116,16 +114,11 @@ class GemmaCreativityEvaluator(Evaluator):
             score_min=self.score_min,
             score_max=self.score_max,
         )
-        if parse_error is not None:
-            raise ValueError(
-                f"Gemma creativity response could not be used ({parse_error}): "
-                f"{raw_response!r}"
-            )
         return {
             "name": self.name,
             "score": score,
             "raw_response": raw_response,
-            "parse_error": None,
+            "parse_error": parse_error,
         }
 
     def evaluate_batch(

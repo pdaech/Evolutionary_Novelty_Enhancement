@@ -11,19 +11,28 @@
 set -euo pipefail
 
 : "${PROJECT_DIR:?Set PROJECT_DIR to the Image_generation checkout}"
-: "${PYTHON_EXE:?Set PYTHON_EXE to the dedicated environment's Python}"
+: "${PYTHON_EXE:?Set PYTHON_EXE to the dedicated environment Python}"
 : "${BASE_PATH:?Set BASE_PATH to the PanFS output root}"
 : "${HF_HOME:?Set HF_HOME to the persistent PanFS Hugging Face cache}"
 : "${EXPERIMENT_ID:?Set EXPERIMENT_ID to a unique run id}"
 : "${GENERATION_PROMPT:?Set GENERATION_PROMPT to the Stable Diffusion prompt}"
 
 cd "$PROJECT_DIR"
-export GENERATION_CODE_COMMIT="${GENERATION_CODE_COMMIT:-$(git rev-parse HEAD)}"
-
-gemma_revision_args=()
-if [[ -n "${GEMMA_REVISION:-}" ]]; then
-  gemma_revision_args=(--gemma_revision "$GEMMA_REVISION")
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+  echo "Refusing to run from a dirty Image_generation checkout" >&2
+  git status --short >&2
+  exit 2
 fi
+source_commit="$(git rev-parse HEAD)"
+if [[ -n "${GENERATION_CODE_COMMIT:-}" && "$GENERATION_CODE_COMMIT" != "$source_commit" ]]; then
+  echo "GENERATION_CODE_COMMIT does not match the checked-out source: $source_commit" >&2
+  exit 2
+fi
+export GENERATION_CODE_COMMIT="$source_commit"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+mkdir -p "$HF_HUB_CACHE"
+
+GEMMA_REVISION="${GEMMA_REVISION:-4d7ae4984b7db7de8f8457170b3f1a419ee76d52}"
 
 "$PYTHON_EXE" run.py \
   --experiment_id "$EXPERIMENT_ID" \
@@ -36,5 +45,5 @@ fi
   --batch_size "${SDXL_BATCH_SIZE:-1}" \
   --evaluator gemma-creativity \
   --gemma_model "${GEMMA_MODEL:-google/gemma-4-26B-A4B-it}" \
-  --gemma_max_new_tokens "${GEMMA_MAX_NEW_TOKENS:-64}" \
-  "${gemma_revision_args[@]}"
+  --gemma_revision "$GEMMA_REVISION" \
+  --gemma_max_new_tokens "${GEMMA_MAX_NEW_TOKENS:-64}"

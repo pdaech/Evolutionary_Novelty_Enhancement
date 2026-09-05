@@ -43,6 +43,7 @@ class Noise:
     initial_seed: int = None
     latent_representation: torch.Tensor = None
     pil_image: Image.Image = None
+    jpeg_artifact: bytes | None = None
     blip2_embedding: torch.Tensor = None
     clip_embedding: torch.Tensor = None
     fitness: float = None
@@ -180,16 +181,33 @@ class Noise:
                 "fitness aggregation must be either 'latest' or 'mean_history'"
             )
 
+    def set_pil_image(self, pil_image: Image.Image) -> None:
+        """Attach an image while clearing any bytes from an older phenotype."""
+        self.pil_image = pil_image.convert("RGB").copy()
+        self.jpeg_artifact = None
+
+    def set_scored_jpeg(self, pil_image: Image.Image) -> None:
+        """Encode once and expose the exact archived JPEG pixels to an evaluator."""
+        img_buffer = io.BytesIO()
+        pil_image.convert("RGB").save(img_buffer, format="JPEG")
+        self.jpeg_artifact = img_buffer.getvalue()
+        with Image.open(io.BytesIO(self.jpeg_artifact)) as stored_image:
+            self.pil_image = stored_image.convert("RGB").copy()
+
     def add_to_zip(self, zf: zipfile.ZipFile, folder_prefix: str = ""):
         """
         Schreibt Bild und Embeddings direkt in das übergebene ZipFile Objekt.
         """
 
         if self.pil_image is not None:
-            img_buffer = io.BytesIO()
-            self.pil_image.save(img_buffer, format="JPEG")
             zip_path_img = f"{folder_prefix}/images/{self.filename}.JPEG"
-            zf.writestr(zip_path_img, img_buffer.getvalue())
+            if self.jpeg_artifact is not None:
+                image_bytes = self.jpeg_artifact
+            else:
+                img_buffer = io.BytesIO()
+                self.pil_image.save(img_buffer, format="JPEG")
+                image_bytes = img_buffer.getvalue()
+            zf.writestr(zip_path_img, image_bytes)
 
         if self.blip2_embedding is not None:
             emb_buffer = io.BytesIO()

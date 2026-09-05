@@ -43,7 +43,10 @@ def args():
         "--gemma_revision",
         type=str,
         default=None,
-        help="Full Hugging Face commit hash (recommended for scientific runs)",
+        help=(
+            "Full Hugging Face commit hash; defaults to the revision validated "
+            "against the human ratings"
+        ),
     )
     parser.add_argument("--gemma_max_new_tokens", type=int, default=64)
     args = parser.parse_args()

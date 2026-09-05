@@ -17,7 +17,8 @@ The parsed 1-5 score for the current image is its fitness. Higher scores win tou
 New or mutated candidates do not inherit a parent's old rating. Gemma is loaded once per process,
 uses BF16 and greedy decoding, and evaluates the PIL images serially to keep GPU memory predictable.
 Malformed, non-finite, or out-of-range responses stop the run instead of silently changing the
-fitness objective.
+fitness objective. Before scoring, each generated image is encoded once as JPEG and decoded for
+Gemma; those exact JPEG bytes are subsequently archived, so the saved phenotype is the one rated.
 
 The Gemma-only path does not load BLIP2 or calculate the legacy novelty, diversity, caption, and
 prompt-fidelity diagnostics. This reduces the combined SDXL/Gemma footprint and is intended for
@@ -26,16 +27,20 @@ the project's one-A100-80-GB profile; verify it with the small smoke test before
 ## Cluster setup
 
 Use a dedicated environment and persistent Hugging Face cache on PanFS, not the home directory.
-The project requires Python 3.12, a CUDA-enabled PyTorch build, and Transformers 5.5 or newer.
+The project requires Python 3.12, the PyTorch 2.8/torchvision 0.23 CUDA build, Transformers 5.5,
+and Diffusers 0.37. Install it into a dedicated environment rather than the completed VLM
+evaluation environment.
 For example, after installing the correct PyTorch wheel for the cluster:
 
 ```bash
 "$PYTHON_EXE" -m pip install -e '.[test]'
 ```
 
-Gemma may require accepting the model terms on Hugging Face and setting `HF_TOKEN`. Pin
-`GEMMA_REVISION` to the full Hugging Face commit for a scientific run. The resolved revision is
-also written to the experiment JSON.
+Gemma may require accepting the model terms on Hugging Face and setting `HF_TOKEN`. The default
+`GEMMA_REVISION` is pinned to `4d7ae4984b7db7de8f8457170b3f1a419ee76d52`, the exact model
+artifact used in the successful human-rating comparison. The requested and resolved revisions
+are written to the experiment JSON. `HF_HOME` follows the standard Hub layout and model
+repositories are reused from `$HF_HOME/hub`.
 
 Start with a small systems smoke test:
 
@@ -49,13 +54,15 @@ export GENERATION_PROMPT=cat
 export NUM_GENERATIONS=1
 export POPULATION_SIZE=4
 export SDXL_BATCH_SIZE=1
+export GEMMA_REVISION=4d7ae4984b7db7de8f8457170b3f1a419ee76d52
 
 mkdir -p "$BASE_PATH"
 sbatch --export=ALL cluster/run_gemma_creativity.sbatch
 ```
 
-After the smoke test, submit a new experiment id with the intended population and generation
-counts. Never reuse an old id: the state CSV is append-only.
+The Slurm entry point refuses a dirty source checkout. After the smoke test, submit a new
+experiment id with the intended population and generation counts. Experiment directories are
+claimed atomically and an existing id is rejected because automatic resume is not implemented.
 
 ## Outputs and audit trail
 
@@ -65,10 +72,12 @@ Each run writes a same-stem ZIP, CSV, and JSON below
 - The ZIP contains every generated JPEG and its input noise tensor.
 - The CSV records each candidate and generation. `fitness`, `score_value`, and the score embedded
   in `file_name` are the current image's Gemma creativity rating for Gemma runs.
-- `fitness_raw_response` preserves Gemma's exact text and `fitness_parse_error` records parser
-  status (successful rows are empty).
-- The JSON records the exact prompt, requested/resolved model revision, decoding settings,
-  software versions, seed, fitness aggregation, and evaluator class.
+- `fitness_raw_response` preserves Gemma's exact text. Successful state rows have an empty
+  `fitness_parse_error`. If a response cannot be used, the run stops and writes its response,
+  reason, candidate, generation, and image hash to `<experiment>.fitness_failures.jsonl`.
+- The JSON records the exact prompt, requested/resolved Gemma revision, decoding settings, SDXL
+  settings/resolved revision, software versions, hardware, seed, fitness aggregation, generator
+  Git commit, and evaluator class.
 
 Run unit checks without downloading Gemma:
 
