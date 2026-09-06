@@ -8,6 +8,7 @@ from src.evaluators.gemma_creativity_evaluator import (
     DEFAULT_CREATIVITY_PROMPT,
     DEFAULT_MODEL_REVISION,
     GemmaCreativityEvaluator,
+    _configure_batch_padding,
     _configure_image_token_budget,
     _parse_score,
     validate_gemma_runtime,
@@ -135,6 +136,31 @@ def test_configure_image_token_budget_updates_chat_pipeline_processor():
     _configure_image_token_budget(inference_pipeline, 140)
 
     assert image_processor.max_soft_tokens == 140
+
+
+def test_configure_batch_padding_aligns_feature_extractor_to_tokenizer():
+    inference_pipeline = SimpleNamespace(
+        tokenizer=SimpleNamespace(padding_side="left"),
+        feature_extractor=SimpleNamespace(padding_side="right"),
+    )
+
+    padding = _configure_batch_padding(inference_pipeline, batch_size=2)
+
+    assert inference_pipeline.tokenizer.padding_side == "left"
+    assert inference_pipeline.feature_extractor.padding_side == "left"
+    assert padding == {"tokenizer": "left", "feature_extractor": "left"}
+
+
+def test_configure_batch_padding_does_not_mutate_serial_pipeline():
+    inference_pipeline = SimpleNamespace(
+        tokenizer=SimpleNamespace(padding_side="left"),
+        feature_extractor=SimpleNamespace(padding_side="right"),
+    )
+
+    padding = _configure_batch_padding(inference_pipeline, batch_size=1)
+
+    assert inference_pipeline.feature_extractor.padding_side == "right"
+    assert padding == {"tokenizer": "left", "feature_extractor": "right"}
 
 
 @pytest.mark.parametrize("value", [0, 69, 100, 281, 2048])

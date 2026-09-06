@@ -43,6 +43,35 @@ def _configure_image_token_budget(inference_pipeline: Any, value: int) -> None:
         raise RuntimeError("Gemma image processor did not retain max_soft_tokens")
 
 
+def _configure_batch_padding(
+    inference_pipeline: Any, batch_size: int
+) -> dict[str, str | None]:
+    """Align pipeline collator padding while preserving causal-LM left padding."""
+    tokenizer = getattr(inference_pipeline, "tokenizer", None)
+    feature_extractor = getattr(inference_pipeline, "feature_extractor", None)
+    tokenizer_side = getattr(tokenizer, "padding_side", None)
+    feature_extractor_side = getattr(feature_extractor, "padding_side", None)
+
+    if (
+        batch_size > 1
+        and tokenizer_side is not None
+        and feature_extractor_side is not None
+        and tokenizer_side != feature_extractor_side
+    ):
+        feature_extractor.padding_side = tokenizer_side
+        feature_extractor_side = getattr(feature_extractor, "padding_side", None)
+        if feature_extractor_side != tokenizer_side:
+            raise RuntimeError(
+                "Gemma pipeline feature extractor did not retain the tokenizer "
+                "padding side required for batched inference"
+            )
+
+    return {
+        "tokenizer": tokenizer_side,
+        "feature_extractor": feature_extractor_side,
+    }
+
+
 def validate_gemma_runtime(torch_module: Any) -> None:
     """Fail before model loading when grouped MoE cannot run on the allocated GPU."""
     if not torch_module.cuda.is_available():
@@ -126,6 +155,7 @@ class GemmaCreativityEvaluator(Evaluator):
         self.prompt = prompt
         self._pipeline = pipeline("image-text-to-text", model=model_id, **options)
         _configure_image_token_budget(self._pipeline, image_token_budget)
+        self._batch_padding = _configure_batch_padding(self._pipeline, batch_size)
         self._resolved_revision = _resolved_revision(self._pipeline)
         self._hardware = _hardware_metadata(self._pipeline, torch)
         self._software = {
@@ -242,6 +272,7 @@ class GemmaCreativityEvaluator(Evaluator):
                 "max_new_tokens": self.max_new_tokens,
                 "do_sample": False,
                 "inference_batch_size": self.batch_size,
+                "pipeline_padding_side": self._batch_padding,
             },
             "image_processing": {
                 "max_soft_tokens": self.image_token_budget,
