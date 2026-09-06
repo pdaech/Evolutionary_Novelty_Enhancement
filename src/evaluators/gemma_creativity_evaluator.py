@@ -11,6 +11,10 @@ from typing import Any
 from PIL import Image
 
 from src.evaluators.base_evaluator import Evaluator
+from src.gemma_options import (
+    DEFAULT_IMAGE_TOKEN_BUDGET,
+    validate_image_token_budget,
+)
 
 DEFAULT_MODEL_ID = "google/gemma-4-26B-A4B-it"
 DEFAULT_MODEL_REVISION = "4d7ae4984b7db7de8f8457170b3f1a419ee76d52"
@@ -20,6 +24,23 @@ DEFAULT_CREATIVITY_PROMPT = (
     "the image more creative. Return only valid JSON in this exact shape: "
     '{"score": <number>}'
 )
+
+
+def _configure_image_token_budget(inference_pipeline: Any, value: int) -> None:
+    """Apply the budget to the image processor used by the chat pipeline."""
+    validate_image_token_budget(value)
+    processor = getattr(inference_pipeline, "processor", None)
+    image_processor = getattr(processor, "image_processor", None)
+    if image_processor is None:
+        image_processor = getattr(inference_pipeline, "image_processor", None)
+    if image_processor is None or not hasattr(image_processor, "max_soft_tokens"):
+        raise RuntimeError(
+            "Loaded Gemma pipeline does not expose a configurable max_soft_tokens "
+            "image processor"
+        )
+    image_processor.max_soft_tokens = value
+    if image_processor.max_soft_tokens != value:
+        raise RuntimeError("Gemma image processor did not retain max_soft_tokens")
 
 
 def validate_gemma_runtime(torch_module: Any) -> None:
@@ -59,6 +80,7 @@ class GemmaCreativityEvaluator(Evaluator):
         dtype: str = "bfloat16",
         device_map: str = "auto",
         max_new_tokens: int = 64,
+        image_token_budget: int = DEFAULT_IMAGE_TOKEN_BUDGET,
         prompt: str = DEFAULT_CREATIVITY_PROMPT,
     ) -> None:
         try:
@@ -75,6 +97,7 @@ class GemmaCreativityEvaluator(Evaluator):
             raise ValueError(f"Unknown torch dtype: {dtype}")
         if max_new_tokens < 1:
             raise ValueError("max_new_tokens must be positive")
+        validate_image_token_budget(image_token_budget)
         validate_gemma_runtime(torch)
 
         options: dict[str, Any] = {"device_map": device_map}
@@ -95,8 +118,10 @@ class GemmaCreativityEvaluator(Evaluator):
         self.dtype = dtype
         self.device_map = device_map
         self.max_new_tokens = max_new_tokens
+        self.image_token_budget = image_token_budget
         self.prompt = prompt
         self._pipeline = pipeline("image-text-to-text", model=model_id, **options)
+        _configure_image_token_budget(self._pipeline, image_token_budget)
         self._resolved_revision = _resolved_revision(self._pipeline)
         self._hardware = _hardware_metadata(self._pipeline, torch)
         self._software = {
@@ -178,6 +203,9 @@ class GemmaCreativityEvaluator(Evaluator):
             "generation": {
                 "max_new_tokens": self.max_new_tokens,
                 "do_sample": False,
+            },
+            "image_processing": {
+                "max_soft_tokens": self.image_token_budget,
             },
             "software": self._software,
             "hardware": self._hardware,

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.gemma_options import DEFAULT_IMAGE_TOKEN_BUDGET
 from src.model_revisions import DEFAULT_SDXL_REVISION, load_pinned_pipeline
 from src.utils.arg_parser import args
 
@@ -99,6 +100,32 @@ def test_cli_defaults_to_smoke_snapshot_and_accepts_explicit_commit(monkeypatch)
     assert args().sdxl_revision == DEFAULT_SDXL_REVISION
     monkeypatch.setattr("sys.argv", [*argv, "--sdxl_revision", "b" * 40])
     assert args().sdxl_revision == "b" * 40
+
+
+def test_cli_defaults_to_280_image_tokens_and_accepts_140(monkeypatch):
+    argv = ["run.py", "--prompt", "cat", "--experiment_id", "unit"]
+    monkeypatch.setattr("sys.argv", argv)
+    assert args().gemma_image_token_budget == DEFAULT_IMAGE_TOKEN_BUDGET
+    monkeypatch.setattr("sys.argv", [*argv, "--gemma_image_token_budget", "140"])
+    assert args().gemma_image_token_budget == 140
+
+
+def test_cli_rejects_unsupported_image_token_budget(monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run.py",
+            "--prompt",
+            "cat",
+            "--experiment_id",
+            "unit",
+            "--gemma_image_token_budget",
+            "100",
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        args()
+    assert error.value.code == 2
 
 
 def test_cli_rejects_mutable_revision(monkeypatch):

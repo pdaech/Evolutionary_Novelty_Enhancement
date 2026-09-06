@@ -8,8 +8,13 @@ from src.evaluators.gemma_creativity_evaluator import (
     DEFAULT_CREATIVITY_PROMPT,
     DEFAULT_MODEL_REVISION,
     GemmaCreativityEvaluator,
+    _configure_image_token_budget,
     _parse_score,
     validate_gemma_runtime,
+)
+from src.gemma_options import (
+    DEFAULT_IMAGE_TOKEN_BUDGET,
+    validate_image_token_budget,
 )
 
 
@@ -87,3 +92,24 @@ def test_evaluate_returns_invalid_rating_for_pipeline_audit():
 
 def test_scientific_default_pins_validated_model_revision():
     assert DEFAULT_MODEL_REVISION == "4d7ae4984b7db7de8f8457170b3f1a419ee76d52"
+
+
+def test_gemma_image_token_budget_defaults_to_validated_setting():
+    assert DEFAULT_IMAGE_TOKEN_BUDGET == 280
+
+
+def test_configure_image_token_budget_updates_chat_pipeline_processor():
+    image_processor = SimpleNamespace(max_soft_tokens=280)
+    inference_pipeline = SimpleNamespace(
+        processor=SimpleNamespace(image_processor=image_processor)
+    )
+
+    _configure_image_token_budget(inference_pipeline, 140)
+
+    assert image_processor.max_soft_tokens == 140
+
+
+@pytest.mark.parametrize("value", [0, 69, 100, 281, 2048])
+def test_gemma_image_token_budget_rejects_unsupported_values(value):
+    with pytest.raises(ValueError, match="must be one of"):
+        validate_image_token_budget(value)

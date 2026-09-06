@@ -47,4 +47,5 @@ GEMMA_REVISION="${GEMMA_REVISION:-4d7ae4984b7db7de8f8457170b3f1a419ee76d52}"
   --evaluator gemma-creativity \
   --gemma_model "${GEMMA_MODEL:-google/gemma-4-26B-A4B-it}" \
   --gemma_revision "$GEMMA_REVISION" \
-  --gemma_max_new_tokens "${GEMMA_MAX_NEW_TOKENS:-64}"
+  --gemma_max_new_tokens "${GEMMA_MAX_NEW_TOKENS:-64}" \
+  --gemma_image_token_budget "${GEMMA_IMAGE_TOKEN_BUDGET:-280}"

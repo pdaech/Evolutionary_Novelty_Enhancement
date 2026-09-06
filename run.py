@@ -17,6 +17,7 @@ from src.evaluators.local_max_mean_divergence_evaluator import (
     LocalMaxMeanDivergenceEvaluator,
 )
 from src.factorys import NoiseFactory
+from src.gemma_options import DEFAULT_IMAGE_TOKEN_BUDGET
 from src.huggingface_models import ModelLoader
 from src.model_revisions import DEFAULT_SDXL_REVISION, full_model_revision
 from src.mutators.uniform_gaussian_mutator import UniformGaussianMutator
@@ -52,6 +53,7 @@ def main(
     gemma_model: str,
     gemma_revision: str,
     gemma_max_new_tokens: int,
+    gemma_image_token_budget: int = DEFAULT_IMAGE_TOKEN_BUDGET,
     sdxl_revision: str = DEFAULT_SDXL_REVISION,
 ):
 
@@ -76,6 +78,7 @@ def main(
             revision=gemma_revision,
             cache_dir=cache_dir or None,
             max_new_tokens=gemma_max_new_tokens,
+            image_token_budget=gemma_image_token_budget,
         )
         global_evaluator = None
         embed = None
@@ -154,5 +157,6 @@ if __name__ == "__main__":
         gemma_model=parsed_args.gemma_model,
         gemma_revision=parsed_args.gemma_revision or DEFAULT_MODEL_REVISION,
         gemma_max_new_tokens=parsed_args.gemma_max_new_tokens,
+        gemma_image_token_budget=parsed_args.gemma_image_token_budget,
         sdxl_revision=parsed_args.sdxl_revision,
     )

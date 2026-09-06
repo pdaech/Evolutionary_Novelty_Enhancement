@@ -20,6 +20,14 @@ Malformed, non-finite, or out-of-range responses stop the run instead of silentl
 fitness objective. Before scoring, each generated image is encoded once as JPEG and decoded for
 Gemma; those exact JPEG bytes are subsequently archived, so the saved phenotype is the one rated.
 
+Gemma's visual input budget is explicit and auditable. `--gemma_image_token_budget` (Slurm
+variable `GEMMA_IMAGE_TOKEN_BUDGET`) accepts Gemma 4's supported values 70, 140, 280, 560, or
+1120 and defaults to 280 to preserve the validated evaluator. It configures the model's
+`max_soft_tokens` image processor without resizing or replacing the archived JPEG and is recorded
+as `evaluator_config.image_processing.max_soft_tokens` in the experiment JSON. Changing it creates
+a different fitness condition; use a new experiment id and do not combine trajectories across
+budgets without validating their agreement.
+
 The Gemma-only path does not load BLIP2 or calculate the legacy novelty, diversity, caption, and
 prompt-fidelity diagnostics. This reduces the combined SDXL/Gemma footprint and is intended for
 the project's one-A100-80-GB profile; verify it with the small smoke test before a full run.
@@ -68,6 +76,7 @@ export NUM_GENERATIONS=1
 export POPULATION_SIZE=4
 export SDXL_BATCH_SIZE=1
 export GEMMA_REVISION=4d7ae4984b7db7de8f8457170b3f1a419ee76d52
+export GEMMA_IMAGE_TOKEN_BUDGET=280
 export SDXL_REVISION=462165984030d82259a11f4367a4eed129e94a7b
 
 mkdir -p "$BASE_PATH"
