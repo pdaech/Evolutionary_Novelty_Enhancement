@@ -81,6 +81,7 @@ class GemmaCreativityEvaluator(Evaluator):
         device_map: str = "auto",
         max_new_tokens: int = 64,
         image_token_budget: int = DEFAULT_IMAGE_TOKEN_BUDGET,
+        batch_size: int = 1,
         prompt: str = DEFAULT_CREATIVITY_PROMPT,
     ) -> None:
         try:
@@ -97,6 +98,8 @@ class GemmaCreativityEvaluator(Evaluator):
             raise ValueError(f"Unknown torch dtype: {dtype}")
         if max_new_tokens < 1:
             raise ValueError("max_new_tokens must be positive")
+        if batch_size < 1:
+            raise ValueError("Gemma batch size must be positive")
         validate_image_token_budget(image_token_budget)
         validate_gemma_runtime(torch)
 
@@ -119,6 +122,7 @@ class GemmaCreativityEvaluator(Evaluator):
         self.device_map = device_map
         self.max_new_tokens = max_new_tokens
         self.image_token_budget = image_token_budget
+        self.batch_size = batch_size
         self.prompt = prompt
         self._pipeline = pipeline("image-text-to-text", model=model_id, **options)
         _configure_image_token_budget(self._pipeline, image_token_budget)
@@ -140,7 +144,54 @@ class GemmaCreativityEvaluator(Evaluator):
         }
 
     def evaluate(self, image: Image.Image, *args, **kwargs) -> dict[str, Any]:
-        messages = [
+        output = self._pipeline(
+            text=self._messages(image),
+            generate_kwargs=self._generation_kwargs(),
+        )
+        return self._result_from_output(output)
+
+    def evaluate_batch(
+        self, images: list[Image.Image], *args, **kwargs
+    ) -> list[dict[str, Any]]:
+        if self.batch_size == 1:
+            return self._evaluate_serially(images)
+
+        scores = []
+        for offset in range(0, len(images), self.batch_size):
+            batch = images[offset : offset + self.batch_size]
+            messages = [self._messages(image) for image in batch]
+            try:
+                outputs = self._pipeline(
+                    text=messages,
+                    batch_size=self.batch_size,
+                    generate_kwargs=self._generation_kwargs(),
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Gemma creativity evaluation failed for batch starting at "
+                    f"item {offset}"
+                ) from exc
+            if not isinstance(outputs, list) or len(outputs) != len(batch):
+                actual = len(outputs) if isinstance(outputs, list) else type(outputs)
+                raise RuntimeError(
+                    f"Gemma returned {actual} outputs for a batch of {len(batch)}"
+                )
+            scores.extend(self._result_from_output(output) for output in outputs)
+        return scores
+
+    def _evaluate_serially(self, images: list[Image.Image]) -> list[dict[str, Any]]:
+        scores = []
+        for index, image in enumerate(images):
+            try:
+                scores.append(self.evaluate(image))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Gemma creativity evaluation failed for batch item {index}"
+                ) from exc
+        return scores
+
+    def _messages(self, image: Image.Image) -> list[dict[str, Any]]:
+        return [
             {
                 "role": "user",
                 "content": [
@@ -149,13 +200,14 @@ class GemmaCreativityEvaluator(Evaluator):
                 ],
             }
         ]
-        output = self._pipeline(
-            text=messages,
-            generate_kwargs={
-                "max_new_tokens": self.max_new_tokens,
-                "do_sample": False,
-            },
-        )
+
+    def _generation_kwargs(self) -> dict[str, Any]:
+        return {
+            "max_new_tokens": self.max_new_tokens,
+            "do_sample": False,
+        }
+
+    def _result_from_output(self, output: Any) -> dict[str, Any]:
         raw_response = _extract_text(output)
         score, parse_error = _parse_score(
             raw_response,
@@ -168,20 +220,6 @@ class GemmaCreativityEvaluator(Evaluator):
             "raw_response": raw_response,
             "parse_error": parse_error,
         }
-
-    def evaluate_batch(
-        self, images: list[Image.Image], *args, **kwargs
-    ) -> list[dict[str, Any]]:
-        # Evaluate serially to keep the combined SDXL + Gemma memory footprint predictable.
-        scores = []
-        for index, image in enumerate(images):
-            try:
-                scores.append(self.evaluate(image))
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Gemma creativity evaluation failed for batch item {index}"
-                ) from exc
-        return scores
 
     @classmethod
     def need(cls) -> None:
@@ -203,6 +241,7 @@ class GemmaCreativityEvaluator(Evaluator):
             "generation": {
                 "max_new_tokens": self.max_new_tokens,
                 "do_sample": False,
+                "inference_batch_size": self.batch_size,
             },
             "image_processing": {
                 "max_soft_tokens": self.image_token_budget,

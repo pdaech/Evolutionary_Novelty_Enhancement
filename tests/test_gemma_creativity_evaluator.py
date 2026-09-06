@@ -70,6 +70,34 @@ def test_evaluate_routes_greedy_generation_options_and_image():
     assert random.getstate() == random_state
 
 
+def test_evaluate_batch_preserves_order_across_pipeline_chunks():
+    calls = []
+    raw_responses = iter(['{"score": 1}', '{"score": 2}', '{"score": 3}'])
+
+    class RecordingPipeline:
+        def __call__(self, **kwargs):
+            calls.append(kwargs)
+            return [[{"generated_text": next(raw_responses)}] for _ in kwargs["text"]]
+
+    evaluator = object.__new__(GemmaCreativityEvaluator)
+    evaluator.prompt = DEFAULT_CREATIVITY_PROMPT
+    evaluator.max_new_tokens = 64
+    evaluator.batch_size = 2
+    evaluator._pipeline = RecordingPipeline()
+
+    results = evaluator.evaluate_batch(
+        [Image.new("RGB", (4, 4), color=index) for index in range(3)]
+    )
+
+    assert [result["score"] for result in results] == [1.0, 2.0, 3.0]
+    assert [len(call["text"]) for call in calls] == [2, 1]
+    assert [call["batch_size"] for call in calls] == [2, 2]
+    assert all(
+        call["generate_kwargs"] == {"max_new_tokens": 64, "do_sample": False}
+        for call in calls
+    )
+
+
 def test_evaluate_returns_invalid_rating_for_pipeline_audit():
     class InvalidPipeline:
         def __call__(self, **kwargs):

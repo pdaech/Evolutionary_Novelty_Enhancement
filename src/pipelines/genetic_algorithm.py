@@ -8,6 +8,7 @@ import zipfile
 from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import pandas as pd
@@ -109,6 +110,9 @@ class GeneticAlgorithmPipeline(Pipeline):
         self.fitness_failure_path = (
             self.result_path / f"{self.name}.fitness_failures.jsonl"
         )
+        self.generation_timing_path = (
+            self.result_path / f"{self.name}.generation_timings.jsonl"
+        )
 
         try:
             self.result_path.mkdir(parents=True, exist_ok=False)
@@ -155,6 +159,8 @@ class GeneticAlgorithmPipeline(Pipeline):
             "timestamp": datetime.now(UTC).isoformat(),
             "result_path": str(self.result_path),
             "stat_path": str(self.state_path),
+            "generation_timing_path": str(self.generation_timing_path),
+            "generation_timing_schema_version": 1,
         }
 
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -242,7 +248,27 @@ class GeneticAlgorithmPipeline(Pipeline):
                     json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
                 )
 
+    def save_generation_timing(self, seconds: dict[str, float]) -> None:
+        """Append auditable stage timings for one successfully evaluated generation."""
+        record = {
+            "schema_version": 1,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "generation": self.generations_done,
+            "population_size": len(self.population),
+            "sdxl_batch_size": self.batch_size,
+            "evaluator_batch_size": getattr(self.evaluator, "batch_size", None),
+            "image_token_budget": getattr(self.evaluator, "image_token_budget", None),
+            "seconds": {
+                name: round(float(duration), 6) for name, duration in seconds.items()
+            },
+        }
+        with self.generation_timing_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
     def one_generation(self):
+
+        one_generation_started = perf_counter()
+        image_generation_started = perf_counter()
 
         pils = []
 
@@ -259,6 +285,8 @@ class GeneticAlgorithmPipeline(Pipeline):
                 f"Generator returned {len(pils)} images for "
                 f"{len(self.population)} candidates"
             )
+        image_generation_seconds = perf_counter() - image_generation_started
+        pre_evaluation_started = perf_counter()
 
         evaluator_need = self.evaluator.need()
         if evaluator_need is None:
@@ -300,8 +328,12 @@ class GeneticAlgorithmPipeline(Pipeline):
                 )
             evaluation_inputs = embeddings
 
+        pre_evaluation_seconds = perf_counter() - pre_evaluation_started
+        fitness_evaluation_started = perf_counter()
         self.evaluator.update(evaluation_inputs)
         scores = self.evaluator.evaluate_batch(evaluation_inputs)
+        fitness_evaluation_seconds = perf_counter() - fitness_evaluation_started
+        post_evaluation_started = perf_counter()
 
         if len(scores) != len(self.population):
             raise RuntimeError(
@@ -360,6 +392,17 @@ class GeneticAlgorithmPipeline(Pipeline):
             candidate.calculate_fitness(self.fitness_aggregation)
             if self.caption_model is not None:
                 candidate.caption = captions[i]
+
+        post_evaluation_seconds = perf_counter() - post_evaluation_started
+        self.save_generation_timing(
+            {
+                "image_generation": image_generation_seconds,
+                "pre_evaluation": pre_evaluation_seconds,
+                "fitness_evaluation": fitness_evaluation_seconds,
+                "post_evaluation": post_evaluation_seconds,
+                "one_generation_total": perf_counter() - one_generation_started,
+            }
+        )
 
     def evolve(self):
         self.generations_done += 1

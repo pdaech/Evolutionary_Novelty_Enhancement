@@ -118,3 +118,31 @@ def test_invalid_fitness_response_is_persisted_before_failure(tmp_path, monkeypa
         records[0]["content_sha256"]
         == hashlib.sha256(candidate.jpeg_artifact).hexdigest()
     )
+
+
+def test_generation_stage_timings_are_persisted_with_runtime_settings(
+    tmp_path, monkeypatch
+):
+    pipeline = _pipeline(tmp_path, monkeypatch, experiment_id="timing-audit")
+    pipeline.population = [SimpleNamespace(), SimpleNamespace()]
+    pipeline.batch_size = 2
+    pipeline.evaluator.batch_size = 3
+    pipeline.evaluator.image_token_budget = 140
+    pipeline.generations_done = 4
+
+    pipeline.save_generation_timing(
+        {
+            "image_generation": 1.25,
+            "fitness_evaluation": 2.5,
+            "one_generation_total": 4.0,
+        }
+    )
+
+    record = json.loads(pipeline.generation_timing_path.read_text(encoding="utf-8"))
+    assert record["schema_version"] == 1
+    assert record["generation"] == 4
+    assert record["population_size"] == 2
+    assert record["sdxl_batch_size"] == 2
+    assert record["evaluator_batch_size"] == 3
+    assert record["image_token_budget"] == 140
+    assert record["seconds"]["fitness_evaluation"] == 2.5

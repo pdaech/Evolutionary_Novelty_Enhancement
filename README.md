@@ -28,6 +28,13 @@ as `evaluator_config.image_processing.max_soft_tokens` in the experiment JSON. C
 a different fitness condition; use a new experiment id and do not combine trajectories across
 budgets without validating their agreement.
 
+Gemma inference batching is separately controlled by `--gemma_batch_size` (Slurm variable
+`GEMMA_BATCH_SIZE`) and defaults to 1, preserving the validated serial behavior. Values above 1
+send ordered groups of image chats through one model call and can improve throughput, but consume
+more activation memory and may introduce small numerical differences. Smoke-test batch size 2
+with the intended token budget before a long run; do not assume that merely requesting more GPUs
+accelerates this single-process pipeline.
+
 The Gemma-only path does not load BLIP2 or calculate the legacy novelty, diversity, caption, and
 prompt-fidelity diagnostics. This reduces the combined SDXL/Gemma footprint and is intended for
 the project's one-A100-80-GB profile; verify it with the small smoke test before a full run.
@@ -77,6 +84,7 @@ export POPULATION_SIZE=4
 export SDXL_BATCH_SIZE=1
 export GEMMA_REVISION=4d7ae4984b7db7de8f8457170b3f1a419ee76d52
 export GEMMA_IMAGE_TOKEN_BUDGET=280
+export GEMMA_BATCH_SIZE=1
 export SDXL_REVISION=462165984030d82259a11f4367a4eed129e94a7b
 
 mkdir -p "$BASE_PATH"
@@ -109,6 +117,10 @@ Each run writes a same-stem ZIP, CSV, and JSON below
 - The JSON records the exact prompt, requested/resolved Gemma revision, decoding settings, SDXL
   settings/requested and resolved revisions, software versions, hardware, seed, fitness aggregation, generator
   Git commit, and evaluator class.
+- `<experiment>.generation_timings.jsonl` records SDXL generation, preparation, Gemma fitness
+  evaluation, post-evaluation, and total seconds for every completed generation, together with
+  the SDXL batch size, Gemma batch size, and image-token budget. Use this file to identify the
+  actual bottleneck before requesting additional GPUs.
 
 Run unit checks without downloading Gemma:
 

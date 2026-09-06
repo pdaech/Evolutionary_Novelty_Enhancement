@@ -3,6 +3,7 @@ import argparse
 from src.gemma_options import (
     DEFAULT_IMAGE_TOKEN_BUDGET,
     SUPPORTED_IMAGE_TOKEN_BUDGETS,
+    positive_int,
 )
 from src.model_revisions import DEFAULT_SDXL_REVISION, full_model_revision
 
@@ -67,6 +68,12 @@ def args():
         choices=SUPPORTED_IMAGE_TOKEN_BUDGETS,
         default=DEFAULT_IMAGE_TOKEN_BUDGET,
         help="Maximum Gemma 4 visual soft tokens per image",
+    )
+    parser.add_argument(
+        "--gemma_batch_size",
+        type=positive_int,
+        default=1,
+        help="Number of images decoded together by Gemma; start with 1 or 2",
     )
     args = parser.parse_args()
 

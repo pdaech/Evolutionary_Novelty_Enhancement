@@ -128,6 +128,17 @@ def test_cli_rejects_unsupported_image_token_budget(monkeypatch):
     assert error.value.code == 2
 
 
+def test_cli_accepts_positive_gemma_batch_size_and_rejects_zero(monkeypatch):
+    argv = ["run.py", "--prompt", "cat", "--experiment_id", "unit"]
+    monkeypatch.setattr("sys.argv", [*argv, "--gemma_batch_size", "2"])
+    assert args().gemma_batch_size == 2
+
+    monkeypatch.setattr("sys.argv", [*argv, "--gemma_batch_size", "0"])
+    with pytest.raises(SystemExit) as error:
+        args()
+    assert error.value.code == 2
+
+
 def test_cli_rejects_mutable_revision(monkeypatch):
     monkeypatch.setattr(
         "sys.argv",

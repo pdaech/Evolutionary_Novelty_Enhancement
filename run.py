@@ -54,6 +54,7 @@ def main(
     gemma_revision: str,
     gemma_max_new_tokens: int,
     gemma_image_token_budget: int = DEFAULT_IMAGE_TOKEN_BUDGET,
+    gemma_batch_size: int = 1,
     sdxl_revision: str = DEFAULT_SDXL_REVISION,
 ):
 
@@ -79,6 +80,7 @@ def main(
             cache_dir=cache_dir or None,
             max_new_tokens=gemma_max_new_tokens,
             image_token_budget=gemma_image_token_budget,
+            batch_size=gemma_batch_size,
         )
         global_evaluator = None
         embed = None
@@ -158,5 +160,6 @@ if __name__ == "__main__":
         gemma_revision=parsed_args.gemma_revision or DEFAULT_MODEL_REVISION,
         gemma_max_new_tokens=parsed_args.gemma_max_new_tokens,
         gemma_image_token_budget=parsed_args.gemma_image_token_budget,
+        gemma_batch_size=parsed_args.gemma_batch_size,
         sdxl_revision=parsed_args.sdxl_revision,
     )

@@ -10,3 +10,11 @@ def validate_image_token_budget(value: int) -> int:
         supported = ", ".join(str(item) for item in SUPPORTED_IMAGE_TOKEN_BUDGETS)
         raise ValueError(f"Gemma image token budget must be one of: {supported}")
     return value
+
+
+def positive_int(value: str | int) -> int:
+    """Parse a strictly positive command-line integer."""
+    parsed = int(value)
+    if parsed < 1:
+        raise ValueError("value must be a positive integer")
+    return parsed
