@@ -140,11 +140,37 @@ class GeneticAlgorithmPipeline(Pipeline):
                 else {}
             ),
             "selector": type(self.selection_function).__name__,
+            "selector_config": {
+                "tournament_size": getattr(
+                    self.selection_function, "tournament_size", None
+                ),
+            },
             "mutator": type(self.mutator).__name__,
+            "mutator_config": {
+                "mutation_rate": getattr(self.mutator, "mutation_rate", None),
+                "mutation_strength": getattr(
+                    self.mutator, "mutation_strength", None
+                ),
+            },
             "crossover_function": type(self.crossover_operation).__name__,
+            "crossover_config": {
+                "swap_rate": getattr(self.crossover_operation, "swap_rate", None),
+            },
+            "noise_factory_config": {
+                "distribution": "standard_normal",
+                "latent_shape_per_candidate": [1, 4, 128, 128],
+                "image_size": [1024, 1024],
+                "init_noise_sigma": 1.0,
+                "apply_pink_noise_filter": getattr(
+                    self.noise_factory, "apply_pink_noise_filter", None
+                ),
+                "dtype": str(getattr(self.noise_factory, "dtype", None)),
+                "device": str(getattr(self.noise_factory, "device", None)),
+            },
             "initial_mutation_rate": self.initial_mutation_rate,
             "crossover_rate": self.crossover_rate,
             "elitism_count": self.elite_size,
+            "no_crossover_policy": "copy_fitter_selected_parent",
             "evaluator": type(self.evaluator).__name__,
             "evaluator_config": self.evaluator.config_metadata(),
             "global_evaluator": (
@@ -420,12 +446,13 @@ class GeneticAlgorithmPipeline(Pipeline):
             parent2 = self.selection_function.select(self.population)
 
             if random.random() > self.crossover_rate:
+                copy_parent = max((parent1, parent2), key=lambda parent: parent.fitness)
                 child = self.noise_factory.create_noise_from_noise(
-                    parent1.initial_noise.clone()
+                    copy_parent.initial_noise.clone()
                 )
                 child.start_generation = self.generations_done
                 child.end_generation = self.generations_done
-                child.parent_1 = parent1.id
+                child.parent_1 = copy_parent.id
                 child.parent_2 = ""
                 child.crossover = False
                 child.mutate = False

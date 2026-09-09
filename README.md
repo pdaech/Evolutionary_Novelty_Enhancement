@@ -3,6 +3,22 @@
 This project evolves the Stable Diffusion XL input noise that produces a population of images.
 It supports the original embedding-novelty objective and a Gemma 4 creativity objective.
 
+## Thesis-compatible image generation
+
+The Gemma path preserves the image-generation and genetic-operator settings reported in Youri
+Sinziri's thesis, changing only the fitness signal. The defaults are SDXL base 1.0 without the
+refiner, Euler Discrete Scheduler, 50 denoising steps, guidance scale 7.5, 1024 x 1024 images,
+standard-Gaussian `4 x 128 x 128` starting latents, tournament size 3, one elite, uniform
+crossover with probability 0.9 and element swap probability 0.5, and mutation of 5% of offspring
+with per-element probability 0.1 and Gaussian strength 0.2. When crossover is skipped, the
+higher-fitness of the two selected parents is copied, as described in the thesis.
+
+The original study prompt must also be reproduced exactly. For the cat condition use `a cat`,
+not `cat`. The thesis reports three runs with different seeds but does not publish their numeric
+values, so new runs must record chosen seeds and cannot recreate the original images bit for bit.
+SDXL batching is an execution setting rather than a scientific parameter, but it remains recorded
+because hardware and batching can affect exact floating-point reproducibility.
+
 ## Gemma creativity fitness
 
 With `--evaluator gemma-creativity`, every generated image is shown to
@@ -78,10 +94,12 @@ export PYTHON_EXE=/path/to/env/bin/python
 export BASE_PATH=/panfs/path/to/output-root
 export HF_HOME=/panfs/path/to/cache/huggingface
 export EXPERIMENT_ID=smoke-001
-export GENERATION_PROMPT=cat
+export GENERATION_PROMPT='a cat'
 export NUM_GENERATIONS=1
 export POPULATION_SIZE=4
 export SDXL_BATCH_SIZE=1
+export SDXL_NUM_INFERENCE_STEPS=50
+export SDXL_GUIDANCE_SCALE=7.5
 export GEMMA_REVISION=4d7ae4984b7db7de8f8457170b3f1a419ee76d52
 export GEMMA_IMAGE_TOKEN_BUDGET=280
 export GEMMA_BATCH_SIZE=1

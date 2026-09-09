@@ -6,6 +6,11 @@ from diffusers import StableDiffusionXLPipeline
 
 from src.huggingface_models.base_strategy import GenerativModelStrategy
 from src.model_revisions import load_pinned_pipeline
+from src.sdxl_options import (
+    DEFAULT_SDXL_GUIDANCE_SCALE,
+    DEFAULT_SDXL_NUM_INFERENCE_STEPS,
+    EXPECTED_SDXL_SCHEDULER_CLASS,
+)
 
 
 class StableDiffusionXLModel(GenerativModelStrategy):
@@ -14,8 +19,8 @@ class StableDiffusionXLModel(GenerativModelStrategy):
         device: str,
         dtype: torch.dtype,
         cache_dir: str,
-        num_inference_steps: int = 50,
-        guidance_scale: float = 7.0,
+        num_inference_steps: int = DEFAULT_SDXL_NUM_INFERENCE_STEPS,
+        guidance_scale: float = DEFAULT_SDXL_GUIDANCE_SCALE,
         compile_pipeline: bool = False,
         model: str = "stabilityai/stable-diffusion-xl-base-1.0",
         revision: str | None = None,
@@ -51,6 +56,29 @@ class StableDiffusionXLModel(GenerativModelStrategy):
                 "revision_source": "pipeline_config" if commit is not None else None,
                 "snapshot_path": None,
             }
+        scheduler = getattr(self.model, "scheduler", None)
+        if scheduler is None:
+            raise RuntimeError("Loaded SDXL pipeline has no scheduler")
+        self.scheduler_class = type(scheduler).__name__
+        if self.scheduler_class != EXPECTED_SDXL_SCHEDULER_CLASS:
+            raise RuntimeError(
+                "Thesis-compatible SDXL generation requires "
+                f"{EXPECTED_SDXL_SCHEDULER_CLASS}, got {self.scheduler_class}"
+            )
+        scheduler_config = getattr(scheduler, "config", {})
+        scheduler_keys = (
+            "beta_end",
+            "beta_schedule",
+            "beta_start",
+            "prediction_type",
+            "timestep_spacing",
+            "use_karras_sigmas",
+        )
+        self.scheduler_config = {
+            key: scheduler_config[key]
+            for key in scheduler_keys
+            if key in scheduler_config
+        }
         self.model.set_progress_bar_config(leave=False)
         self.model.set_progress_bar_config(disable=True)
         self.model.to(device=device)
@@ -67,6 +95,8 @@ class StableDiffusionXLModel(GenerativModelStrategy):
             "device": self.device,
             "num_inference_steps": self.num_inference_steps,
             "guidance_scale": self.guidance_scale,
+            "scheduler_class": self.scheduler_class,
+            "scheduler_config": self.scheduler_config,
             "software": {
                 "torch": str(torch.__version__),
                 "diffusers": _package_version("diffusers"),
@@ -109,8 +139,8 @@ class StableDiffusionXLRefinerStrategy(StableDiffusionXLModel):
         dtype: torch.dtype,
         cache_dir: str,
         compile_pipeline: bool = False,
-        num_inference_steps: int = 50,
-        guidance_scale: float = 7.0,
+        num_inference_steps: int = DEFAULT_SDXL_NUM_INFERENCE_STEPS,
+        guidance_scale: float = DEFAULT_SDXL_GUIDANCE_SCALE,
         high_noise_frac=0.8,
         model: str = "stabilityai/stable-diffusion-xl-base-1.0",
         refiner: str = "stabilityai/stable-diffusion-xl-refiner-1.0",

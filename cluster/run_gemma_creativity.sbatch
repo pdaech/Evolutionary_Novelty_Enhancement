@@ -44,6 +44,8 @@ GEMMA_REVISION="${GEMMA_REVISION:-4d7ae4984b7db7de8f8457170b3f1a419ee76d52}"
   --population_size "${POPULATION_SIZE:-100}" \
   --batch_size "${SDXL_BATCH_SIZE:-1}" \
   --sdxl_revision "${SDXL_REVISION:-462165984030d82259a11f4367a4eed129e94a7b}" \
+  --sdxl_num_inference_steps "${SDXL_NUM_INFERENCE_STEPS:-50}" \
+  --sdxl_guidance_scale "${SDXL_GUIDANCE_SCALE:-7.5}" \
   --evaluator gemma-creativity \
   --gemma_model "${GEMMA_MODEL:-google/gemma-4-26B-A4B-it}" \
   --gemma_revision "$GEMMA_REVISION" \

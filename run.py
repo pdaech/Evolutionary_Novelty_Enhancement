@@ -6,7 +6,6 @@ from pathlib import Path
 import torch
 from diffusers.utils.logging import disable_progress_bar
 from dotenv import load_dotenv
-
 from src.crossover import UniformCrossover
 from src.evaluators.gemma_creativity_evaluator import (
     DEFAULT_MODEL_REVISION,
@@ -22,6 +21,10 @@ from src.huggingface_models import ModelLoader
 from src.model_revisions import DEFAULT_SDXL_REVISION, full_model_revision
 from src.mutators.uniform_gaussian_mutator import UniformGaussianMutator
 from src.pipelines.genetic_algorithm import GeneticAlgorithmPipeline
+from src.sdxl_options import (
+    DEFAULT_SDXL_GUIDANCE_SCALE,
+    DEFAULT_SDXL_NUM_INFERENCE_STEPS,
+)
 from src.selector_functions.tournament_selector import TournamentSelector
 from src.utils.arg_parser import args
 
@@ -56,6 +59,8 @@ def main(
     gemma_image_token_budget: int = DEFAULT_IMAGE_TOKEN_BUDGET,
     gemma_batch_size: int = 1,
     sdxl_revision: str = DEFAULT_SDXL_REVISION,
+    sdxl_num_inference_steps: int = DEFAULT_SDXL_NUM_INFERENCE_STEPS,
+    sdxl_guidance_scale: float = DEFAULT_SDXL_GUIDANCE_SCALE,
 ):
 
     full_model_revision(sdxl_revision)
@@ -71,7 +76,11 @@ def main(
     cache_dir = _huggingface_cache_dir()
     ml = ModelLoader(cache_dir=cache_dir)
 
-    sdxl = ml.load_sdxl(revision=sdxl_revision)
+    sdxl = ml.load_sdxl(
+        revision=sdxl_revision,
+        num_inference_steps=sdxl_num_inference_steps,
+        guidance_scale=sdxl_guidance_scale,
+    )
 
     if normalized_evaluator in {"gemma", "gemma4", "gemma-creativity"}:
         evaluator = GemmaCreativityEvaluator(
@@ -162,4 +171,6 @@ if __name__ == "__main__":
         gemma_image_token_budget=parsed_args.gemma_image_token_budget,
         gemma_batch_size=parsed_args.gemma_batch_size,
         sdxl_revision=parsed_args.sdxl_revision,
+        sdxl_num_inference_steps=parsed_args.sdxl_num_inference_steps,
+        sdxl_guidance_scale=parsed_args.sdxl_guidance_scale,
     )

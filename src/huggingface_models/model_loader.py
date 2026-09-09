@@ -9,6 +9,10 @@ from src.huggingface_models.image_embedding.clip_embedding import ClipEmbeddingM
 from src.huggingface_models.text_to_image.stable_diffusion_xl import (
     StableDiffusionXLModel,
 )
+from src.sdxl_options import (
+    DEFAULT_SDXL_GUIDANCE_SCALE,
+    DEFAULT_SDXL_NUM_INFERENCE_STEPS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +44,28 @@ class ModelLoader:
         self.clip_embeddings = None
         self._initialized = True
 
-    def load_sdxl(self, revision: str | None = None) -> StableDiffusionXLModel:
+    def load_sdxl(
+        self,
+        revision: str | None = None,
+        num_inference_steps: int = DEFAULT_SDXL_NUM_INFERENCE_STEPS,
+        guidance_scale: float = DEFAULT_SDXL_GUIDANCE_SCALE,
+    ) -> StableDiffusionXLModel:
         if self.sdxl is None:
             self.sdxl = StableDiffusionXLModel(
-                self.device, self.dtype, self.cache_dir, revision=revision
+                self.device,
+                self.dtype,
+                self.cache_dir,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                revision=revision,
             )
-        elif self.sdxl.requested_revision != revision:
+        elif (
+            self.sdxl.requested_revision != revision
+            or self.sdxl.num_inference_steps != num_inference_steps
+            or self.sdxl.guidance_scale != guidance_scale
+        ):
             raise ValueError(
-                "SDXL is already loaded with a different requested revision"
+                "SDXL is already loaded with a different requested configuration"
             )
 
         return self.sdxl

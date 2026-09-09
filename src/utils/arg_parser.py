@@ -6,6 +6,11 @@ from src.gemma_options import (
     positive_int,
 )
 from src.model_revisions import DEFAULT_SDXL_REVISION, full_model_revision
+from src.sdxl_options import (
+    DEFAULT_SDXL_GUIDANCE_SCALE,
+    DEFAULT_SDXL_NUM_INFERENCE_STEPS,
+    positive_float,
+)
 
 
 def args():
@@ -46,6 +51,18 @@ def args():
         type=full_model_revision,
         default=DEFAULT_SDXL_REVISION,
         help="Full SDXL commit hash; defaults to the successful smoke-test snapshot",
+    )
+    parser.add_argument(
+        "--sdxl_num_inference_steps",
+        type=positive_int,
+        default=DEFAULT_SDXL_NUM_INFERENCE_STEPS,
+        help="SDXL denoising steps; the thesis configuration uses 50",
+    )
+    parser.add_argument(
+        "--sdxl_guidance_scale",
+        type=positive_float,
+        default=DEFAULT_SDXL_GUIDANCE_SCALE,
+        help="SDXL classifier-free guidance scale; the thesis configuration uses 7.5",
     )
     parser.add_argument(
         "--gemma_model",
