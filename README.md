@@ -121,6 +121,67 @@ and that the CSV/ZIP again contain eight observations. Record the working enviro
 team beside the run using `python -m pip freeze` from the dedicated environment; a complete
 tested cluster environment lock has not yet been committed.
 
+## Full six-prompt campaign
+
+Use the dedicated launcher for full runs. It always passes population 100, generations 0-30,
+seed 2025 (unless explicitly changed), SDXL batch 2 / 50 steps / guidance 7.5, and Gemma
+batch 2 / 140 visual tokens as command-line arguments. It ignores old smoke-test variables such
+as `POPULATION_SIZE=4` or `NUM_GENERATIONS=1`. Each prompt produces **3,100** image/state records
+including generation zero; the six prompts total **18,600**. This is one seed per prompt.
+
+From the generator checkout, using the dedicated environment Python:
+
+```bash
+CAMPAIGN="thesis6-full-$(date +%Y%m%d-%H%M%S)"
+"$PYTHON_EXE" cluster/thesis_full.py preview \
+  --runtime-root "$RUNTIME_ROOT" --campaign "$CAMPAIGN"
+
+"$PYTHON_EXE" cluster/thesis_full.py submit \
+  --runtime-root "$RUNTIME_ROOT" --campaign "$CAMPAIGN"
+```
+
+The default submits one array of six independent one-GPU jobs, capped at four running tasks
+(`0-5%4`), each with 8 CPUs, 64 GB host RAM and a 72-hour limit. It targets `gpu30-022`, where the
+A100 80 GB profile was tested. `--node OTHER_NODE` selects another verified node;
+`--node ""` permits any GPU2 node, but each worker requires exactly one visible GPU with at
+least 78 GiB total memory before loading models. Hardware remains part of the run provenance.
+All submissions use account `dldevel`, partition/QOS `gpu2`.
+
+If QOS/account limits permit six GPUs per user and at least two per job, the optional
+`--gpus-per-job 2` submits three jobs with two independent prompt processes each. Each job
+requests two GPUs, 16 CPUs and 128 GB RAM and uses two concurrent exclusive Slurm steps,
+each with one GPU, 8 CPUs and 64 GB RAM. Slurm assigns device visibility. This can finish in
+one wave if six GPUs can be allocated. Verify step isolation in a short cluster allocation
+before using this new layout for a long run. Job and GPU limits are distinct; requesting
+GPU pairs can also lengthen queue waits. One-GPU jobs are the established fallback.
+
+Both layouts preserve the existing generation and Gemma code. Weights share a persistent disk
+cache, with a separate in-memory model per GPU. From the batch-2 smoke timings, expect roughly
+26 hours per prompt and 156 GPU-hours overall, plus startup, archive writing, queueing and node
+contention. Four single-GPU jobs at a time need about two waves; three two-GPU jobs may fit one.
+Actual full-run timing is more informative than this extrapolation. Model reuse saves only
+loading minutes; larger SDXL batches require a separate memory/throughput benchmark.
+
+Before submitting, the launcher creates `$RUNTIME_ROOT/gemma_ga_outputs/submissions/$CAMPAIGN/`.
+It saves `plan.json`, the exact request, the Slurm response and a `tasks.tsv` mapping. Duplicate
+campaign names and existing output directories are refused. Even if submission fails or returns
+an ambiguous response, its record remains: inspect it and `squeue` before retrying.
+Authentication secrets are never saved in the plan. Its SHA-256 and the clean generator commit
+are checked at worker startup. Keep the checkout and environment unchanged until all tasks
+finish. Automatic requeue is disabled because generation resume is not implemented.
+
+Monitor the saved campaign, including after reconnecting:
+
+```bash
+"$PYTHON_EXE" cluster/thesis_full.py status \
+  --manifest "$RUNTIME_ROOT/gemma_ga_outputs/submissions/$CAMPAIGN/plan.json"
+```
+
+This shows saved rows out of 3,100 and finished generation counts out of 31 per prompt, and flags
+a population/generation mismatch. `prompt-0.out/.err` through `prompt-5.out/.err` are stored inside
+the campaign directory; `job-*.out/.err` record dispatch. This is a progress display; confirm Slurm
+exit status and audit the artifacts on completion.
+
 ## Outputs and audit trail
 
 Each run writes a same-stem ZIP, CSV, and JSON below
