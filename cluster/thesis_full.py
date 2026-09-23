@@ -48,11 +48,26 @@ def clean_commit(project):
     return git("rev-parse", "HEAD")
 
 
-def make_plan(project, runtime, campaign, seed, workers, node, commit):
+def make_plan(
+    project,
+    runtime,
+    campaign,
+    seed,
+    workers,
+    node,
+    commit,
+    *,
+    single_allocation=False,
+    afterany=None,
+):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", campaign):
         raise ValueError("Campaign name: use 1-80 letters, digits, - or _")
     if workers not in (1, 2) or not 0 <= seed < 2**32:
         raise ValueError("Choose 1-2 workers and a seed between 0 and 2**32-1")
+    if single_allocation and workers != 2:
+        raise ValueError("Single-allocation waves require exactly two GPUs")
+    if afterany is not None and not re.fullmatch(r"[1-9][0-9]*", str(afterany)):
+        raise ValueError("--afterany must be a positive Slurm job ID")
     if node and not re.fullmatch(r"[A-Za-z0-9_.-]+", node):
         raise ValueError("Node must be a single Slurm node name")
     base = runtime / "gemma_ga_outputs"
@@ -63,7 +78,8 @@ def make_plan(project, runtime, campaign, seed, workers, node, commit):
         tasks.append(
             {
                 "index": index,
-                "array_index": index // workers,
+                "array_index": 0 if single_allocation else index // workers,
+                "wave_index": index // workers,
                 "prompt": prompt,
                 "experiment_id": experiment,
                 "run_name": name,
@@ -80,6 +96,10 @@ def make_plan(project, runtime, campaign, seed, workers, node, commit):
         "seed": seed,
         "options": dict(OPTIONS),
         "gpus_per_job": workers,
+        "scheduling": "single-allocation-waves"
+        if single_allocation
+        else "parallel-array",
+        "afterany": str(afterany) if afterany is not None else None,
         "node": node,
         "environment": {
             "BASE_PATH": str(base),
@@ -118,7 +138,8 @@ def inference_command(plan, task):
 
 def sbatch_command(plan, manifest, digest):
     workers = plan["gpus_per_job"]
-    count = len(plan["tasks"]) // workers
+    single_allocation = plan.get("scheduling") == "single-allocation-waves"
+    count = 1 if single_allocation else len(plan["tasks"]) // workers
     command = [
         "sbatch",
         "--parsable",
@@ -131,7 +152,7 @@ def sbatch_command(plan, manifest, digest):
         f"--gres=gpu:{workers}",
         "--cpus-per-task=8",
         f"--mem={workers * 64}G",
-        "--time=3-00:00:00",
+        "--time=5-00:00:00" if single_allocation else "--time=3-00:00:00",
         "--no-requeue",
         "--export=ALL",
         "--job-name=gemma-thesis-full",
@@ -141,6 +162,8 @@ def sbatch_command(plan, manifest, digest):
     ]
     if plan["node"]:
         command.append(f"--nodelist={plan['node']}")
+    if plan.get("afterany"):
+        command.append(f"--dependency=afterany:{plan['afterany']}")
     command.extend(
         [
             str(Path(plan["project"]) / "cluster" / "run_thesis_full_array.sbatch"),
@@ -155,19 +178,33 @@ def sbatch_command(plan, manifest, digest):
 
 def print_plan(plan):
     workers = plan["gpus_per_job"]
+    single_allocation = plan.get("scheduling") == "single-allocation-waves"
+    if single_allocation:
+        resources = (
+            "1 allocation; 2 GPUs; 3 consecutive two-prompt waves; 5-day limit\n"
+        )
+    else:
+        resources = (
+            f"{6 // workers} jobs; {workers} GPU(s)/job; "
+            f"at most {min(4, 6 // workers)} jobs concurrently\n"
+        )
+    dependency = (
+        f"Dependency: afterany:{plan['afterany']}\n" if plan.get("afterany") else ""
+    )
     print(
         f"FULL RUN: 6 prompts x 100 candidates x 31 generations (0-30)\n"
         f"3,100 image records per prompt; 18,600 total; seed={plan['seed']}\n"
         "SDXL: Euler, 50 steps, guidance=7.5, batch=2\n"
         "Gemma: 140 visual tokens, batch=2, greedy creativity scoring\n"
-        f"{6 // workers} jobs; {workers} GPU(s)/job; "
-        f"at most {min(4, 6 // workers)} jobs concurrently\n"
-        f"Per worker: 8 CPUs, 64 GB host RAM; node={plan['node'] or 'any gpu2'}\n"
-        f"Generator commit: {plan['generator_commit']}",
+        + resources
+        + f"Per worker: 8 CPUs, 64 GB host RAM; node={plan['node'] or 'any gpu2'}\n"
+        + dependency
+        + f"Generator commit: {plan['generator_commit']}",
         flush=True,
     )
     for task in plan["tasks"]:
-        print(f"  [{task['array_index']}] {task['prompt']}: {task['output_directory']}")
+        group = task["wave_index"] if single_allocation else task["array_index"]
+        print(f"  [{group}] {task['prompt']}: {task['output_directory']}")
 
 
 def save_json(path, value):
@@ -252,6 +289,11 @@ def read_verified_plan(path, digest):
     plan = json.loads(content)
     if plan["schema_version"] != 1 or plan["options"] != OPTIONS:
         raise ValueError("Unexpected full-run configuration")
+    if plan.get("scheduling", "parallel-array") not in {
+        "parallel-array",
+        "single-allocation-waves",
+    }:
+        raise ValueError("Unexpected scheduling mode")
     if clean_commit(plan["project"]) != plan["generator_commit"]:
         raise ValueError("Generator checkout changed while this campaign was queued")
     return plan
@@ -279,38 +321,50 @@ def run_group(plan, manifest, digest, group_index):
     tasks = [task for task in plan["tasks"] if task["array_index"] == group_index]
     if not tasks:
         raise ValueError(f"Unknown array index {group_index}")
-    processes = []
-    for task in tasks:
-        command = [
-            "srun",
-            "--exclusive",
-            "--exact",
-            "--nodes=1",
-            "--ntasks=1",
-            "--gres=gpu:1",
-            "--cpus-per-task=8",
-            "--mem=64G",
-            "--export=ALL",
-            f"--output={manifest.parent}/prompt-{task['index']}.out",
-            f"--error={manifest.parent}/prompt-{task['index']}.err",
-            plan["python"],
-            "-u",
-            str(Path(plan["project"]) / "cluster/thesis_full.py"),
-            "run-task",
-            "--manifest",
-            str(manifest),
-            "--sha256",
-            digest,
-            "--index",
-            str(task["index"]),
+    if plan.get("scheduling") == "single-allocation-waves":
+        workers = plan["gpus_per_job"]
+        waves = [
+            tasks[offset : offset + workers] for offset in range(0, len(tasks), workers)
         ]
-        processes.append(subprocess.Popen(command))
-    # Allow an independently running partner to finish even if one prompt fails.
-    returncodes = [process.wait() for process in processes]
-    print(
-        f"Prompt indices {[task['index'] for task in tasks]}: exit codes {returncodes}"
-    )
-    return int(any(code != 0 for code in returncodes))
+    else:
+        waves = [tasks]
+    failed = False
+    for wave_index, wave in enumerate(waves):
+        processes = []
+        for task in wave:
+            command = [
+                "srun",
+                "--exclusive",
+                "--exact",
+                "--nodes=1",
+                "--ntasks=1",
+                "--gres=gpu:1",
+                "--cpus-per-task=8",
+                "--mem=64G",
+                "--export=ALL",
+                f"--output={manifest.parent}/prompt-{task['index']}.out",
+                f"--error={manifest.parent}/prompt-{task['index']}.err",
+                plan["python"],
+                "-u",
+                str(Path(plan["project"]) / "cluster/thesis_full.py"),
+                "run-task",
+                "--manifest",
+                str(manifest),
+                "--sha256",
+                digest,
+                "--index",
+                str(task["index"]),
+            ]
+            processes.append(subprocess.Popen(command))
+        # Finish both workers before starting the next wave in this allocation.
+        returncodes = [process.wait() for process in processes]
+        print(
+            f"Wave {wave_index}: prompt indices {[task['index'] for task in wave]}, "
+            f"exit codes {returncodes}",
+            flush=True,
+        )
+        failed = failed or any(code != 0 for code in returncodes)
+    return int(failed)
 
 
 def status(manifest):
@@ -365,6 +419,15 @@ def main():
         sub.add_argument("--seed", type=int, default=2025)
         sub.add_argument("--gpus-per-job", type=int, choices=(1, 2), default=1)
         sub.add_argument(
+            "--single-allocation",
+            action="store_true",
+            help="Run six prompts in three waves inside one two-GPU allocation",
+        )
+        sub.add_argument(
+            "--afterany",
+            help="Start after this Slurm job finishes, regardless of exit status",
+        )
+        sub.add_argument(
             "--node",
             default="gpu30-022",
             help="Known A100 node; empty string allows any gpu2 node",
@@ -386,6 +449,8 @@ def main():
             args.gpus_per_job,
             args.node,
             clean_commit(project),
+            single_allocation=args.single_allocation,
+            afterany=args.afterany,
         )
         print_plan(plan)
         if args.action == "submit":

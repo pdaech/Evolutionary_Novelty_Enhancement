@@ -162,6 +162,47 @@ contention. Four single-GPU jobs at a time need about two waves; three two-GPU j
 Actual full-run timing is more informative than this extrapolation. Model reuse saves only
 loading minutes; larger SDXL batches require a separate memory/throughput benchmark.
 
+### Single-allocation waves for additional seeds
+
+The first full campaign lost the last generation of three prompts when separate allocations on
+the same node received signal 9 as another allocation finished. The cause was not proven. For
+new replicates, `--single-allocation --gpus-per-job 2` keeps all six prompts in one two-GPU
+allocation, running three consecutive two-prompt waves. The job requests the `gpu2` five-day
+limit; the earlier roughly 26-hour prompt runtime suggests about 78 hours for three waves, with
+substantial scheduling and I/O uncertainty. This avoids the observed overlap of multiple
+allocations from this campaign. It cannot guarantee completion after a node or site failure, and
+generation resume is still unavailable. Check that each prompt saved 3,100 records and that the
+Slurm job exited successfully.
+
+Two new seeds can be submitted without overlapping their allocations. `--afterany` makes the
+second seed wait until the first Slurm job ends, even if that job fails, so both campaigns retain
+their own audit trails. Use a fresh campaign name for each submission:
+
+```bash
+CAMPAIGN_2026="thesis6-gemma-seed2026-$(date +%Y%m%d-%H%M%S)"
+"$PYTHON_EXE" cluster/thesis_full.py preview \
+  --runtime-root "$RUNTIME_ROOT" --campaign "$CAMPAIGN_2026" \
+  --seed 2026 --gpus-per-job 2 --single-allocation
+"$PYTHON_EXE" cluster/thesis_full.py submit \
+  --runtime-root "$RUNTIME_ROOT" --campaign "$CAMPAIGN_2026" \
+  --seed 2026 --gpus-per-job 2 --single-allocation
+
+FIRST_JOB=$("$PYTHON_EXE" -c \
+  'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["job_id"])' \
+  "$RUNTIME_ROOT/gemma_ga_outputs/submissions/$CAMPAIGN_2026/submission.json")
+CAMPAIGN_2027="thesis6-gemma-seed2027-$(date +%Y%m%d-%H%M%S)"
+"$PYTHON_EXE" cluster/thesis_full.py preview \
+  --runtime-root "$RUNTIME_ROOT" --campaign "$CAMPAIGN_2027" \
+  --seed 2027 --gpus-per-job 2 --single-allocation --afterany "$FIRST_JOB"
+"$PYTHON_EXE" cluster/thesis_full.py submit \
+  --runtime-root "$RUNTIME_ROOT" --campaign "$CAMPAIGN_2027" \
+  --seed 2027 --gpus-per-job 2 --single-allocation --afterany "$FIRST_JOB"
+```
+
+Keep the generator checkout and environment at the submitted revision until both campaigns
+finish; workers verify the saved commit. Each campaign has its own `plan.json`, logs, ZIP/CSV/JSON
+artifacts and `status` command as described below.
+
 Before submitting, the launcher creates `$RUNTIME_ROOT/gemma_ga_outputs/submissions/$CAMPAIGN/`.
 It saves `plan.json`, the exact request, the Slurm response and a `tasks.tsv` mapping. Duplicate
 campaign names and existing output directories are refused. Even if submission fails or returns

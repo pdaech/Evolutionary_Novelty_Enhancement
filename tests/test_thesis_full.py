@@ -66,6 +66,53 @@ def test_resource_requests_cover_isolated_workers(tmp_path, workers, array, memo
     assert "--nodelist=gpu30-022" in command
 
 
+def test_single_allocation_uses_three_waves_and_can_wait_for_prior_campaign(tmp_path):
+    configuration = launcher.make_plan(
+        tmp_path / "code",
+        tmp_path / "runtime",
+        "seed2027",
+        2027,
+        2,
+        "gpu30-022",
+        "a" * 40,
+        single_allocation=True,
+        afterany="1234",
+    )
+    assert {task["array_index"] for task in configuration["tasks"]} == {0}
+    assert [task["wave_index"] for task in configuration["tasks"]] == [0, 0, 1, 1, 2, 2]
+    assert [task["prompt"] for task in configuration["tasks"]] == [
+        prompt for _slug, prompt in launcher.PROMPTS
+    ]
+    command = launcher.sbatch_command(configuration, tmp_path / "plan.json", "digest")
+    assert "--array=0-0%1" in command
+    assert "--gres=gpu:2" in command
+    assert "--time=5-00:00:00" in command
+    assert "--dependency=afterany:1234" in command
+    with pytest.raises(ValueError, match="exactly two GPUs"):
+        launcher.make_plan(
+            tmp_path / "code",
+            tmp_path / "runtime",
+            "invalid",
+            2026,
+            1,
+            "gpu30-022",
+            "a" * 40,
+            single_allocation=True,
+        )
+    with pytest.raises(ValueError, match="positive Slurm job ID"):
+        launcher.make_plan(
+            tmp_path / "code",
+            tmp_path / "runtime",
+            "invalid",
+            2026,
+            2,
+            "gpu30-022",
+            "a" * 40,
+            single_allocation=True,
+            afterany="not-a-job",
+        )
+
+
 def test_manifest_precedes_submission_and_duplicate_is_refused(tmp_path, monkeypatch):
     configuration = plan(tmp_path)
     directory = (
@@ -146,6 +193,50 @@ def test_workers_launch_before_wait_and_propagate_failure(tmp_path, monkeypatch)
     monkeypatch.setattr(launcher.subprocess, "Popen", Process)
     assert launcher.run_group(configuration, tmp_path / "plan.json", "hash", 0) == 1
     assert events == [("launch", 0), ("launch", 1), ("wait", 0), ("wait", 1)]
+
+
+def test_single_allocation_finishes_each_wave_before_starting_the_next(
+    tmp_path, monkeypatch
+):
+    configuration = launcher.make_plan(
+        tmp_path / "code",
+        tmp_path / "runtime",
+        "seed2026",
+        2026,
+        2,
+        "gpu30-022",
+        "a" * 40,
+        single_allocation=True,
+    )
+    events = []
+
+    class Process:
+        def __init__(self, command):
+            self.index = int(command[-1])
+            assert "--gres=gpu:1" in command
+            assert "--exclusive" in command
+            events.append(("launch", self.index))
+
+        def wait(self):
+            events.append(("wait", self.index))
+            return 1 if self.index == 0 else 0
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", Process)
+    assert launcher.run_group(configuration, tmp_path / "plan.json", "hash", 0) == 1
+    assert events == [
+        ("launch", 0),
+        ("launch", 1),
+        ("wait", 0),
+        ("wait", 1),
+        ("launch", 2),
+        ("launch", 3),
+        ("wait", 2),
+        ("wait", 3),
+        ("launch", 4),
+        ("launch", 5),
+        ("wait", 4),
+        ("wait", 5),
+    ]
 
 
 def test_wrong_gpu_visibility_stops_before_inference(tmp_path, monkeypatch):
