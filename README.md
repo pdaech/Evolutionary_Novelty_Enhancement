@@ -123,6 +123,12 @@ tested cluster environment lock has not yet been committed.
 
 ## Full six-prompt campaign
 
+For the two new seeds **2026 and 2027 on six GPUs**, use the audited
+[three-job replicate launcher](cluster/THESIS_SIX_GPU.md). It keeps all parent
+allocations alive until all twelve prompt runs finish, validates every generation
+0-30 and archive, and provides isolated retry attempts and a recovery command.
+That guide includes the transition from existing jobs 1780644 and 1780645.
+
 Use the dedicated launcher for full runs. It always passes population 100, generations 0-30,
 seed 2025 (unless explicitly changed), SDXL batch 2 / 50 steps / guidance 7.5, and Gemma
 batch 2 / 140 visual tokens as command-line arguments. It ignores old smoke-test variables such
