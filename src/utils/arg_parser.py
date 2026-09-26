@@ -29,7 +29,7 @@ def args():
         "--ev",
         dest="evaluator",
         default="novelty",
-        help="Fitness evaluator: novelty or gemma-creativity",
+        help="Fitness evaluator: novelty, gemma-creativity, or gemma-construct",
     )
     parser.add_argument("--prompt", type=str, required=True, help="Generation prompt")
     parser.add_argument("--new_prompt", type=str, help="prompt for this experiment")
@@ -79,6 +79,12 @@ def args():
         ),
     )
     parser.add_argument("--gemma_max_new_tokens", type=int, default=64)
+    parser.add_argument(
+        "--gemma_fitness_construct",
+        type=str,
+        default=None,
+        help="Registered image-only scoring construct for gemma-construct",
+    )
     parser.add_argument(
         "--gemma_image_token_budget",
         type=int,

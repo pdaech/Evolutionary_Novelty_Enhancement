@@ -1,7 +1,7 @@
 """Six GPU lanes, immutable attempts, full artifact audits, and a shared exit barrier.
 
-No changes to the scientific generator. Recovery restarts an interrupted trajectory
-from generation zero with its original seed; it never splices generations.
+Recovery restarts an interrupted trajectory from generation zero with its original
+seed; it never splices generations. Construct campaigns use a distinct score prompt.
 """
 
 import argparse
@@ -14,6 +14,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import time
 import traceback
 import zipfile
@@ -23,6 +24,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import thesis_full as full
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from src.gemma_constructs import ADJECTIVES, scoring_prompt  # noqa: E402
 
 
 def require(condition, message):
@@ -93,16 +97,97 @@ def make_plan(project, runtime, campaign, seeds, commit):
     return plan
 
 
+def make_construct_plan(project, runtime, campaign, seeds, commit, construct):
+    require(construct in ADJECTIVES, "Unknown fitness construct")
+    require(
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,59}", campaign),
+        "Campaign must contain 1-60 letters, digits, - or _",
+    )
+    require(
+        list(seeds) == [2025, 2026, 2027],
+        "Construct comparison uses matched seeds 2025, 2026 and 2027",
+    )
+    plans = [
+        full.make_plan(
+            project, runtime, f"{campaign}-s{seed}", seed, 2, "gpu30-022", commit
+        )
+        for seed in seeds
+    ]
+    plan = plans[0]
+    plan.update(
+        schema_version=3,
+        kind="six-gpu-fitness-construct",
+        campaign=campaign,
+        construct=construct,
+        scoring_prompt=scoring_prompt(construct),
+        seeds=list(seeds),
+        max_attempts=2,
+        scheduling="three-allocations-shared-barrier",
+        run_id=f"gemma-{construct}",
+    )
+    plan["options"] = dict(
+        full.OPTIONS,
+        evaluator="gemma-construct",
+        gemma_fitness_construct=construct,
+    )
+    tasks = []
+    for seed, seed_plan in zip(seeds, plans, strict=True):
+        for lane, task in enumerate(seed_plan["tasks"]):
+            slug = full.PROMPTS[lane][0]
+            experiment = f"{campaign}-{slug}-p100-g30-seed{seed}"
+            run_name = f"gemma-{construct}_{experiment}"
+            tasks.append(
+                dict(
+                    task,
+                    experiment_id=experiment,
+                    run_name=run_name,
+                    output_directory=str(
+                        runtime / "gemma_ga_outputs/results/simulations" / run_name
+                    ),
+                    lane=lane,
+                    seed=seed,
+                    key=f"{construct}-seed{seed}-{slug}",
+                )
+            )
+    plan["tasks"] = tasks
+    return plan
+
+
 def verified_plan(campaign, digest=None):
     path = Path(campaign) / "plan.json"
     if digest is not None:
         require(sha256(path) == digest, "Campaign plan changed after submission")
     plan = read_json(path)
-    require(
-        plan.get("kind") == "six-gpu-replicates" and plan["schema_version"] == 2,
-        "Unexpected campaign schema",
-    )
-    require(plan["options"] == full.OPTIONS, "Scientific settings changed")
+    if plan.get("kind") == "six-gpu-replicates" and plan.get("schema_version") == 2:
+        require(plan["options"] == full.OPTIONS, "Scientific settings changed")
+    else:
+        require(
+            plan.get("kind") == "six-gpu-fitness-construct"
+            and plan.get("schema_version") == 3,
+            "Unexpected campaign schema",
+        )
+        construct = plan["construct"]
+        require(construct in ADJECTIVES, "Unknown fitness construct")
+        require(
+            plan["options"]
+            == dict(
+                full.OPTIONS,
+                evaluator="gemma-construct",
+                gemma_fitness_construct=construct,
+            ),
+            "Construct scientific settings changed",
+        )
+        require(
+            plan["scoring_prompt"] == scoring_prompt(construct),
+            "Construct scoring prompt changed",
+        )
+        require(plan["seeds"] == [2025, 2026, 2027], "Construct seeds changed")
+        require(plan["run_id"] == f"gemma-{construct}", "Construct run ID changed")
+        require(len(plan["tasks"]) == 18, "Expected 18 construct runs")
+        require(
+            len({task["key"] for task in plan["tasks"]}) == 18,
+            "Duplicate construct task key",
+        )
     require(
         full.clean_commit(plan["project"]) == plan["generator_commit"],
         "Generator checkout changed; restore its submitted commit",
@@ -137,9 +222,29 @@ def audit_artifacts(plan, task):
         "num_generations": 30,
         "generation_code_commit": plan["generator_commit"],
         "fitness_aggregation": "latest",
-        "evaluator": "GemmaCreativityEvaluator",
+        "evaluator": (
+            "GemmaConstructEvaluator"
+            if plan.get("kind") == "six-gpu-fitness-construct"
+            else "GemmaCreativityEvaluator"
+        ),
     }.items():
         require(config.get(field) == expected, f"{task['key']}: unexpected {field}")
+    if plan.get("kind") == "six-gpu-fitness-construct":
+        evaluator_config = config.get("evaluator_config", {})
+        require(
+            evaluator_config.get("construct") == plan["construct"]
+            and evaluator_config.get("prompt") == plan["scoring_prompt"]
+            and evaluator_config.get("prompt_sha256")
+            == hashlib.sha256(plan["scoring_prompt"].encode("utf-8")).hexdigest()
+            and evaluator_config.get("objective")
+            == f"maximize_current_image_{plan['construct']}"
+            and evaluator_config.get("model_id") == plan["options"]["gemma_model"]
+            and evaluator_config.get("requested_revision")
+            == plan["options"]["gemma_revision"]
+            and evaluator_config.get("image_processing", {}).get("max_soft_tokens")
+            == plan["options"]["gemma_image_token_budget"],
+            f"{task['key']}: construct evaluator metadata differs",
+        )
     failure = Path(f"{stem}.fitness_failures.jsonl")
     require(
         not failure.exists() or failure.stat().st_size == 0,
@@ -161,8 +266,18 @@ def audit_artifacts(plan, task):
     require(len(set(names)) == 3100, "Duplicate image filename")
     for row in rows:
         score = float(row["fitness"])
-        require(math.isfinite(score) and 1 <= score <= 5, "Invalid creativity fitness")
+        require(
+            math.isfinite(score) and 1 <= score <= 5,
+            "Invalid Gemma fitness"
+            if plan.get("construct")
+            else "Invalid creativity fitness",
+        )
         require(float(row["score_value"]) == score, "Stored score and fitness differ")
+        if plan.get("construct"):
+            require(
+                row["score_name"] == f"Gemma4{plan['construct'].title()}",
+                "Stored score belongs to another construct",
+            )
         require(not row["fitness_parse_error"].strip(), "Parse-invalid fitness")
         require(
             row["file_name"].startswith(f"g{int(row['generation'])}_id"),
@@ -417,7 +532,7 @@ def run_group(campaign, digest, batch_id, index):
                         "status": "complete",
                         "checked_at": now(),
                         "tasks": reports,
-                        "total_rows": 37200,
+                        "total_rows": len(plan["tasks"]) * 3100,
                         "batch": batch_id,
                     },
                 )
@@ -431,7 +546,10 @@ def run_group(campaign, digest, batch_id, index):
         time.sleep(5)
     failed = read_json(batch / "release.json")["failed"]
     if not failed:
-        print("ALL 12 PROMPT RUNS COMPLETE: generations 0-30 validated", flush=True)
+        print(
+            f"ALL {len(plan['tasks'])} PROMPT RUNS COMPLETE: generations 0-30 validated",
+            flush=True,
+        )
     else:
         print(
             "CAMPAIGN INCOMPLETE: inspect lane logs and status before recovery",
@@ -456,7 +574,7 @@ def sbatch_command(plan, campaign, batch, digest):
         "--time=5-00:00:00",
         "--no-requeue",
         "--export=ALL",
-        "--job-name=gemma-replicates",
+        f"--job-name=gemma-{plan.get('construct', 'replicates')}",
         "--nodelist=gpu30-022",
         f"--chdir={plan['project']}",
         f"--output={batch}/job-%A_%a.out",
@@ -497,7 +615,7 @@ def submit_batch(plan, campaign):
     print(
         f"Submitted array {receipt['job_id']}: 3 jobs x 2 GPUs = 6 GPUs maximum\n"
         f"Campaign: {campaign}\nLogs: {batch}\n"
-        "Each lane runs its prompt with both seeds. "
+        f"Each lane runs its prompt with seeds {plan['seeds']}. "
         "All allocations wait at the exit barrier."
     )
 
@@ -582,7 +700,10 @@ def status(campaign, verify=False):
     print(f"Verified completion receipts: {complete}/{len(plan['tasks'])} prompt runs")
     if verify:
         require(complete == len(plan["tasks"]), "Campaign is not complete")
-        print("VERIFY OK: 37,200 observations; all twelve runs have generations 0-30")
+        print(
+            f"VERIFY OK: {len(plan['tasks']) * 3100:,} observations; "
+            f"all {len(plan['tasks'])} runs have generations 0-30"
+        )
 
 
 def main():
@@ -593,6 +714,11 @@ def main():
         sub.add_argument("--runtime-root", type=Path, required=True)
         sub.add_argument("--campaign", required=True)
         sub.add_argument("--seeds", nargs=2, type=int, default=[2026, 2027])
+    for action in ("preview-construct", "submit-construct"):
+        sub = commands.add_parser(action)
+        sub.add_argument("--runtime-root", type=Path, required=True)
+        sub.add_argument("--campaign", required=True)
+        sub.add_argument("--construct", choices=list(ADJECTIVES), required=True)
     for action in ("status", "verify", "recover", "run-group", "run-lane"):
         sub = commands.add_parser(action)
         sub.add_argument("--campaign", type=Path, required=True)
@@ -602,22 +728,38 @@ def main():
         if action == "run-group":
             sub.add_argument("--batch", required=True)
     args = parser.parse_args()
-    if args.action in ("preview", "submit"):
+    if args.action in ("preview", "submit", "preview-construct", "submit-construct"):
         project = Path(__file__).resolve().parents[1]
-        plan = make_plan(
-            project,
-            args.runtime_root.resolve(),
-            args.campaign,
-            args.seeds,
-            full.clean_commit(project),
-        )
+        if args.action.endswith("-construct"):
+            plan = make_construct_plan(
+                project,
+                args.runtime_root.resolve(),
+                args.campaign,
+                [2025, 2026, 2027],
+                full.clean_commit(project),
+                args.construct,
+            )
+        else:
+            plan = make_plan(
+                project,
+                args.runtime_root.resolve(),
+                args.campaign,
+                args.seeds,
+                full.clean_commit(project),
+            )
         campaign = args.runtime_root / "gemma_ga_outputs/submissions" / args.campaign
         print(
-            f"6 prompts x 2 seeds x 100 images x 31 generations = 37,200 observations\n"
-            f"Seeds: {args.seeds}; 3 separate jobs, 2 GPUs each; five-day limit\n"
+            f"6 prompts x {len(plan['seeds'])} seeds x 100 images x 31 generations "
+            f"= {len(plan['tasks']) * 3100:,} observations\n"
+            f"Seeds: {plan['seeds']}; 3 separate jobs, 2 GPUs each; five-day limit\n"
             f"Generator: {plan['generator_commit']}\nCampaign: {campaign}"
         )
-        if args.action == "submit":
+        if plan.get("construct"):
+            print(
+                f"Fitness condition: {plan['construct']}\n"
+                f"Exact Gemma question: {plan['scoring_prompt']}"
+            )
+        if args.action.startswith("submit"):
             campaign.mkdir(parents=True, exist_ok=False)
             full.save_json(campaign / "plan.json", plan)
             for key in (

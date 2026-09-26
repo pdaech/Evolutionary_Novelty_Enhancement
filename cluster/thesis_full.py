@@ -121,7 +121,7 @@ def inference_command(plan, task):
         "-u",
         str(Path(plan["project"]) / "run.py"),
         "--id",
-        "gemma-creativity",
+        plan.get("run_id", "gemma-creativity"),
         "--directory",
         "results/simulations",
         "--experiment_id",

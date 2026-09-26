@@ -7,6 +7,7 @@ import torch
 from diffusers.utils.logging import disable_progress_bar
 from dotenv import load_dotenv
 from src.crossover import UniformCrossover
+from src.evaluators.gemma_construct_evaluator import GemmaConstructEvaluator
 from src.evaluators.gemma_creativity_evaluator import (
     DEFAULT_MODEL_REVISION,
     GemmaCreativityEvaluator,
@@ -16,6 +17,7 @@ from src.evaluators.local_max_mean_divergence_evaluator import (
     LocalMaxMeanDivergenceEvaluator,
 )
 from src.factorys import NoiseFactory
+from src.gemma_constructs import ADJECTIVES
 from src.gemma_options import DEFAULT_IMAGE_TOKEN_BUDGET
 from src.huggingface_models import ModelLoader
 from src.model_revisions import DEFAULT_SDXL_REVISION, full_model_revision
@@ -61,12 +63,15 @@ def main(
     sdxl_revision: str = DEFAULT_SDXL_REVISION,
     sdxl_num_inference_steps: int = DEFAULT_SDXL_NUM_INFERENCE_STEPS,
     sdxl_guidance_scale: float = DEFAULT_SDXL_GUIDANCE_SCALE,
+    gemma_fitness_construct: str | None = None,
 ):
 
     full_model_revision(sdxl_revision)
     normalized_evaluator = evaluator_name.strip().lower().replace("_", "-")
-    if normalized_evaluator in {"gemma", "gemma4", "gemma-creativity"}:
+    if normalized_evaluator in {"gemma", "gemma4", "gemma-creativity", "gemma-construct"}:
         validate_gemma_runtime(torch)
+    if normalized_evaluator == "gemma-construct" and gemma_fitness_construct not in ADJECTIVES:
+        raise ValueError("gemma-construct requires a registered --gemma_fitness_construct")
 
     selector = TournamentSelector(tournament_size=3)
     mutator = UniformGaussianMutator(mutation_rate=0.1, mutation_strengh=0.2)
@@ -82,14 +87,25 @@ def main(
         guidance_scale=sdxl_guidance_scale,
     )
 
-    if normalized_evaluator in {"gemma", "gemma4", "gemma-creativity"}:
-        evaluator = GemmaCreativityEvaluator(
+    if normalized_evaluator in {"gemma", "gemma4", "gemma-creativity", "gemma-construct"}:
+        evaluator_class = (
+            GemmaConstructEvaluator
+            if normalized_evaluator == "gemma-construct"
+            else GemmaCreativityEvaluator
+        )
+        construct_kwargs = (
+            {"construct": gemma_fitness_construct}
+            if normalized_evaluator == "gemma-construct"
+            else {}
+        )
+        evaluator = evaluator_class(
             model_id=gemma_model,
             revision=gemma_revision,
             cache_dir=cache_dir or None,
             max_new_tokens=gemma_max_new_tokens,
             image_token_budget=gemma_image_token_budget,
             batch_size=gemma_batch_size,
+            **construct_kwargs,
         )
         global_evaluator = None
         embed = None
@@ -105,7 +121,8 @@ def main(
         compute_auxiliary_metrics = True
     else:
         raise ValueError(
-            f"Unknown evaluator {evaluator_name!r}; use 'novelty' or 'gemma-creativity'"
+            f"Unknown evaluator {evaluator_name!r}; use 'novelty', "
+            "'gemma-creativity', or 'gemma-construct'"
         )
 
     unique_experiment_id = f"{base_id}_{experiment_id}"
@@ -168,6 +185,7 @@ if __name__ == "__main__":
         gemma_model=parsed_args.gemma_model,
         gemma_revision=parsed_args.gemma_revision or DEFAULT_MODEL_REVISION,
         gemma_max_new_tokens=parsed_args.gemma_max_new_tokens,
+        gemma_fitness_construct=parsed_args.gemma_fitness_construct,
         gemma_image_token_budget=parsed_args.gemma_image_token_budget,
         gemma_batch_size=parsed_args.gemma_batch_size,
         sdxl_revision=parsed_args.sdxl_revision,

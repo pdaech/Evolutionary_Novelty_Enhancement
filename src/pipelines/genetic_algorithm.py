@@ -380,7 +380,7 @@ class GeneticAlgorithmPipeline(Pipeline):
                 }
             )
             raise RuntimeError(
-                "Gemma creativity evaluation returned unusable scores; "
+                "Gemma fitness evaluation returned unusable scores; "
                 f"details were written to {self.fitness_failure_path}. "
                 f"Reasons: {', '.join(reasons)}"
             )

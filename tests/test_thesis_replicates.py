@@ -1,6 +1,8 @@
 import csv
+import hashlib
 import importlib.util
 import io
+import json
 import sys
 import time
 import zipfile
@@ -74,7 +76,28 @@ def make_artifact(plan, task, *, last=30, invalid=False, missing_image=False):
             "num_generations": 30,
             "generation_code_commit": plan["generator_commit"],
             "fitness_aggregation": "latest",
-            "evaluator": "GemmaCreativityEvaluator",
+            "evaluator": (
+                "GemmaConstructEvaluator"
+                if plan.get("construct")
+                else "GemmaCreativityEvaluator"
+            ),
+            "evaluator_config": (
+                {
+                    "construct": plan["construct"],
+                    "prompt": plan["scoring_prompt"],
+                    "prompt_sha256": hashlib.sha256(
+                        plan["scoring_prompt"].encode("utf-8")
+                    ).hexdigest(),
+                    "objective": f"maximize_current_image_{plan['construct']}",
+                    "model_id": plan["options"]["gemma_model"],
+                    "requested_revision": plan["options"]["gemma_revision"],
+                    "image_processing": {
+                        "max_soft_tokens": plan["options"]["gemma_image_token_budget"]
+                    },
+                }
+                if plan.get("construct")
+                else {}
+            ),
         },
     )
     buffer = io.BytesIO()
@@ -91,6 +114,7 @@ def make_artifact(plan, task, *, last=30, invalid=False, missing_image=False):
                 "file_name",
                 "fitness",
                 "score_value",
+                "score_name",
                 "fitness_parse_error",
             ],
         )
@@ -105,6 +129,11 @@ def make_artifact(plan, task, *, last=30, invalid=False, missing_image=False):
                         "file_name": name,
                         "fitness": "nan" if invalid else "4.0",
                         "score_value": "4.0",
+                        "score_name": (
+                            f"Gemma4{plan['construct'].title()}"
+                            if plan.get("construct")
+                            else "Gemma4Creativity"
+                        ),
                         "fitness_parse_error": "",
                     }
                 )
@@ -121,6 +150,26 @@ def test_real_complete_archive_passes_and_retains_full_hashes(plan):
     assert report["rows"] == 3100
     assert report["generations"] == list(range(31))
     assert all(len(value["sha256"]) == 64 for value in report["files"].values())
+
+
+def test_construct_archive_requires_exact_scoring_question(tmp_path):
+    plan = launcher.make_construct_plan(
+        tmp_path / "code",
+        tmp_path / "runtime",
+        "novelty-v1",
+        [2025, 2026, 2027],
+        "a" * 40,
+        "novelty",
+    )
+    task = launcher.attempt_task(plan["tasks"][0], 1)
+    stem = make_artifact(plan, task)
+    assert launcher.audit_artifacts(plan, task)["rows"] == 3100
+    config_path = Path(f"{stem}.json")
+    config = launcher.read_json(config_path)
+    config["evaluator_config"]["prompt"] = "How creative do you find the image?"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(ValueError, match="metadata differs"):
+        launcher.audit_artifacts(plan, task)
 
 
 @pytest.mark.parametrize(
