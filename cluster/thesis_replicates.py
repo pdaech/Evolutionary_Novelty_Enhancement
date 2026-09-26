@@ -1,4 +1,4 @@
-"""Six GPU lanes, immutable attempts, full artifact audits, and a shared exit barrier.
+"""Six or eight GPU lanes, artifact audits, and a shared exit barrier.
 
 Recovery restarts an interrupted trajectory from generation zero with its original
 seed; it never splices generations. Construct campaigns use a distinct score prompt.
@@ -97,7 +97,8 @@ def make_plan(project, runtime, campaign, seeds, commit):
     return plan
 
 
-def make_construct_plan(project, runtime, campaign, seeds, commit, construct):
+def make_construct_plan(project, runtime, campaign, seeds, commit, construct, gpus=6):
+    require(gpus in (6, 8), "Choose six or eight GPUs")
     require(construct in ADJECTIVES, "Unknown fitness construct")
     require(
         re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,59}", campaign),
@@ -150,7 +151,19 @@ def make_construct_plan(project, runtime, campaign, seeds, commit, construct):
                 )
             )
     plan["tasks"] = tasks
+    if gpus == 8:
+        plan.update(
+            schema_version=4,
+            gpu_count=8,
+            scheduling="four-allocations-shared-barrier",
+        )
+        for index, task in enumerate(tasks):
+            task["lane"] = index % 8
     return plan
+
+
+def group_count(plan):
+    return plan.get("gpu_count", 6) // 2
 
 
 def verified_plan(campaign, digest=None):
@@ -163,7 +176,7 @@ def verified_plan(campaign, digest=None):
     else:
         require(
             plan.get("kind") == "six-gpu-fitness-construct"
-            and plan.get("schema_version") == 3,
+            and plan.get("schema_version") in (3, 4),
             "Unexpected campaign schema",
         )
         construct = plan["construct"]
@@ -188,6 +201,16 @@ def verified_plan(campaign, digest=None):
             len({task["key"] for task in plan["tasks"]}) == 18,
             "Duplicate construct task key",
         )
+        if plan["schema_version"] == 4:
+            require(
+                plan.get("gpu_count") == 8
+                and plan.get("scheduling") == "four-allocations-shared-barrier"
+                and [task["lane"] for task in plan["tasks"]]
+                == [index % 8 for index in range(18)],
+                "Eight-GPU scheduling changed",
+            )
+        else:
+            require(plan.get("gpu_count", 6) == 6, "Legacy GPU count changed")
     require(
         full.clean_commit(plan["project"]) == plan["generator_commit"],
         "Generator checkout changed; restore its submitted commit",
@@ -416,7 +439,7 @@ def run_task(plan, campaign, task):
 
 
 def run_lane(plan, campaign, lane):
-    require(lane in range(6), "Invalid lane")
+    require(lane in range(group_count(plan) * 2), "Invalid lane")
     failed = False
     with lane_lock(campaign, lane):
         for task in (item for item in plan["tasks"] if item["lane"] == lane):
@@ -428,22 +451,22 @@ def run_lane(plan, campaign, lane):
     return int(failed)
 
 
-def wait_for_groups(batch, deadline, poll=15):
+def wait_for_groups(batch, deadline, poll=15, groups=3):
     """Every parent, including a failed parent, stays alive until all workers stop."""
     announced = None
     while True:
-        paths = [batch / f"group-{index}.json" for index in range(3)]
+        paths = [batch / f"group-{index}.json" for index in range(groups)]
         count = sum(path.exists() for path in paths)
         if count != announced:
             print(
-                f"EXIT BARRIER: {count}/3 allocations finished their workers/audits",
+                f"EXIT BARRIER: {count}/{groups} allocations finished their workers/audits",
                 flush=True,
             )
             announced = count
-        if count == 3:
+        if count == groups:
             records = [read_json(path) for path in paths]
             require(
-                [record["group"] for record in records] == [0, 1, 2],
+                [record["group"] for record in records] == list(range(groups)),
                 "Unexpected barrier records",
             )
             return any(record["failed"] for record in records)
@@ -456,7 +479,10 @@ def wait_for_groups(batch, deadline, poll=15):
 
 
 def run_group(campaign, digest, batch_id, index):
-    require(index in range(3), "Invalid group")
+    # Establish barrier size before launching workers or writing a group receipt.
+    plan = verified_plan(campaign, digest)
+    groups = group_count(plan)
+    require(index in range(groups), "Invalid group")
     require(
         os.environ.get("SLURM_ARRAY_TASK_ID") == str(index), "Slurm array index differs"
     )
@@ -514,7 +540,7 @@ def run_group(campaign, digest, batch_id, index):
         {"group": index, "failed": failed, "ended_at": now()},
     )
     deadline = int(os.environ.get("SLURM_JOB_END_TIME", time.time() + 5 * 86400)) - 120
-    failed = wait_for_groups(batch, deadline) or failed
+    failed = wait_for_groups(batch, deadline, 15, groups) or failed
     if index == 0:
         try:
             if not failed:
@@ -559,13 +585,14 @@ def run_group(campaign, digest, batch_id, index):
 
 
 def sbatch_command(plan, campaign, batch, digest):
+    groups = group_count(plan)
     return [
         "sbatch",
         "--parsable",
         "--account=dldevel",
         "--partition=gpu2",
         "--qos=gpu2",
-        "--array=0-2%3",
+        f"--array=0-{groups - 1}%{groups}",
         "--nodes=1",
         "--ntasks=2",
         "--gres=gpu:2",
@@ -613,9 +640,10 @@ def submit_batch(plan, campaign):
         f"No confirmed job ID; inspect {batch} and squeue before retrying",
     )
     print(
-        f"Submitted array {receipt['job_id']}: 3 jobs x 2 GPUs = 6 GPUs maximum\n"
+        f"Submitted array {receipt['job_id']}: {group_count(plan)} jobs x 2 GPUs "
+        f"= {group_count(plan) * 2} GPUs maximum\n"
         f"Campaign: {campaign}\nLogs: {batch}\n"
-        f"Each lane runs its prompt with seeds {plan['seeds']}. "
+        f"Runs use seeds {plan['seeds']} across {group_count(plan) * 2} GPU lanes. "
         "All allocations wait at the exit barrier."
     )
 
@@ -719,6 +747,7 @@ def main():
         sub.add_argument("--runtime-root", type=Path, required=True)
         sub.add_argument("--campaign", required=True)
         sub.add_argument("--construct", choices=list(ADJECTIVES), required=True)
+        sub.add_argument("--gpus", type=int, choices=(6, 8), default=6)
     for action in ("status", "verify", "recover", "run-group", "run-lane"):
         sub = commands.add_parser(action)
         sub.add_argument("--campaign", type=Path, required=True)
@@ -738,6 +767,7 @@ def main():
                 [2025, 2026, 2027],
                 full.clean_commit(project),
                 args.construct,
+                args.gpus,
             )
         else:
             plan = make_plan(
@@ -751,7 +781,8 @@ def main():
         print(
             f"6 prompts x {len(plan['seeds'])} seeds x 100 images x 31 generations "
             f"= {len(plan['tasks']) * 3100:,} observations\n"
-            f"Seeds: {plan['seeds']}; 3 separate jobs, 2 GPUs each; five-day limit\n"
+            f"Seeds: {plan['seeds']}; {group_count(plan)} separate jobs, "
+            "2 GPUs each; five-day limit\n"
             f"Generator: {plan['generator_commit']}\nCampaign: {campaign}"
         )
         if plan.get("construct"):

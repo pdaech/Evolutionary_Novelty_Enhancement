@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Resources supplied by thesis_replicates.py; three distinct two-GPU allocations.
+# Resources supplied by thesis_replicates.py; three or four two-GPU allocations.
 set -euo pipefail
 umask 0002
 exec "$1" -u "$2" run-group \

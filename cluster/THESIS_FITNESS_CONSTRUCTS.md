@@ -41,6 +41,19 @@ budget. Each campaign requests a five-day allocation limit. The six campaigns
 together require roughly nine times the image evaluations of the successful
 two-seed creativity campaign, before reruns or audits.
 
+The user subsequently requested eight GPUs for the first full novelty campaign.
+Pass `--gpus 8` to both `preview-construct` and `submit-construct` to request four
+two-GPU array allocations (`0-3%4`), with the same five-day limit and node
+gpu30-022. This occupies the previously reported maximum of four running jobs;
+current resource availability and account limits must still permit scheduling.
+Default execution remains six GPUs for existing workflows.
+The 18 complete prompt/seed runs are assigned round-robin to eight lanes (two
+lanes have three runs, six have two). No trajectory is split across GPUs. All
+four allocations wait for all workers and audits before release; idle lanes
+remain reserved until completion. Eight GPUs therefore do not guarantee a
+25% reduction in elapsed time versus six. No scoring, generation or audit
+settings change. Recovery uses the GPU count in the immutable campaign plan.
+
 ## Keep the previous generator checkout available
 
 The existing creativity campaign pins generator commit `661ced6`. Create a

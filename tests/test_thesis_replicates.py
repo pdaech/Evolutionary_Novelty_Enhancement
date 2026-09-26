@@ -274,17 +274,23 @@ def test_lane_continues_other_seed_after_failure(plan, tmp_path, monkeypatch):
     assert calls == [2026, 2027]
 
 
-def test_barrier_does_not_release_fast_or_failed_allocation(tmp_path):
+@pytest.mark.parametrize("groups", [3, 4])
+def test_barrier_does_not_release_fast_or_failed_allocation(tmp_path, groups):
     launcher.atomic_json(tmp_path / "group-0.json", {"group": 0, "failed": False})
     launcher.atomic_json(tmp_path / "group-1.json", {"group": 1, "failed": True})
+    if groups == 4:
+        launcher.atomic_json(tmp_path / "group-2.json", {"group": 2, "failed": False})
     with ThreadPoolExecutor() as executor:
         future = executor.submit(
-            launcher.wait_for_groups, tmp_path, time.time() + 3, 0.01
+            launcher.wait_for_groups, tmp_path, time.time() + 3, 0.01, groups
         )
         # A missing third allocation must keep the parent alive, even on failure.
         with pytest.raises(TimeoutError):
             future.result(timeout=0.1)
-        launcher.atomic_json(tmp_path / "group-2.json", {"group": 2, "failed": False})
+        launcher.atomic_json(
+            tmp_path / f"group-{groups - 1}.json",
+            {"group": groups - 1, "failed": False},
+        )
         assert future.result(timeout=2) is True
 
 
