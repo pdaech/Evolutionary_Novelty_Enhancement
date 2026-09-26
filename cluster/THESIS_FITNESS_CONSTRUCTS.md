@@ -61,7 +61,32 @@ git -C "$SOURCE" fetch origin codex/gemma-fitness-constructs
 git -C "$SOURCE" worktree add --detach "$CODE" "$REVISION"
 ```
 
-Review the exact plan and question for one condition before submission:
+## One-GPU smoke run
+
+Before the first full condition, submit a novelty smoke run using the same
+model revisions, image processing, SDXL settings, evaluator and output format.
+Only the population and trajectory are shortened: four images in generations
+0 and 1 of `a cat` at seed 2025. The job requests one GPU, eight CPUs, 64 GiB
+host RAM and two hours. Its archive audit checks all eight scores, the exact
+question, JPEGs and paired initial-noise tensors.
+
+```bash
+SMOKE_NAME=fitness-novelty-smoke-v1
+"$PYTHON_EXE" "$CODE/cluster/smoke_fitness_construct.py" preview \
+    --runtime-root "$ROOT" --construct novelty --campaign "$SMOKE_NAME"
+"$PYTHON_EXE" "$CODE/cluster/smoke_fitness_construct.py" submit \
+    --runtime-root "$ROOT" --construct novelty --campaign "$SMOKE_NAME"
+```
+
+After the smoke job leaves the queue, verify the saved scores and archive:
+
+```bash
+SMOKE="$ROOT/gemma_ga_outputs/smoke/$SMOKE_NAME"
+"$PYTHON_EXE" "$CODE/cluster/smoke_fitness_construct.py" verify \
+    --campaign "$SMOKE"
+```
+
+Review the exact plan and question for one full condition before submission:
 
 ```bash
 CONSTRUCT=novelty
