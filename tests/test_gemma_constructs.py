@@ -67,6 +67,18 @@ def test_construct_plan_matches_three_seeds_and_isolates_fitness(tmp_path, const
             assert options["--prompt"] == task["prompt"]
             assert options["--seed"] == str(task["seed"])
             assert options["--num_generations"] == "30"
+            for attempt in (1, 2):
+                current = launcher.attempt_task(task, attempt)
+                current_command = launcher.full.inference_command(plan, current)
+                current_options = dict(
+                    zip(current_command[3::2], current_command[4::2], strict=True)
+                )
+                actual_output = (
+                    Path(plan["environment"]["BASE_PATH"])
+                    / current_options["--directory"]
+                    / f"{current_options['--id']}_{current_options['--experiment_id']}"
+                )
+                assert Path(current["output_directory"]) == actual_output
     slurm = launcher.sbatch_command(plan, tmp_path, tmp_path / "batch-001", "hash")
     assert "--array=0-2%3" in slurm
     assert "--gres=gpu:2" in slurm

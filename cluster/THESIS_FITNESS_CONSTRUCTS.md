@@ -86,6 +86,38 @@ SMOKE="$ROOT/gemma_ga_outputs/smoke/$SMOKE_NAME"
     --campaign "$SMOKE"
 ```
 
+Smoke artifacts are stored under `gemma_ga_outputs/results/simulations/<run_name>`;
+the plan, logs and completion receipt are under `gemma_ga_outputs/smoke/<campaign>`.
+
+### Recover the original smoke audit path error
+
+Commit `c45162a` declared an incorrect smoke artifact directory while the generator
+wrote to its normal `results/simulations` directory. Job 1785236 finished generation
+and scoring, then its audit failed looking for the JSON in the declared directory.
+The corrected launcher now declares the generator's actual output location.
+
+Keep the original `Image_generation_fitness_constructs` worktree at `c45162a`,
+because the original plan verifies that source commit. Use a separate clean worktree
+at the reviewed fix revision (`FIXED_CODE` below). To audit the already saved results
+without another GPU run:
+
+```bash
+"$PYTHON_EXE" "$FIXED_CODE/cluster/smoke_fitness_construct.py" recover-audit \
+    --campaign "$ROOT/gemma_ga_outputs/smoke/fitness-novelty-smoke-v1"
+```
+
+This verifies the submitted plan hash, producing checkout, all eight ratings,
+question/model metadata, JPEGs and noise archive coverage. On success it saves
+`audit-recovery.json` with the declared and actual directories, artifact hashes,
+original plan hash and audit script hash. The original plan and artifacts remain
+unchanged. Repeating this command verifies the recovery receipt against a fresh
+audit. Slurm still reports the original job as failed, and the old `verify` command
+still reports it incomplete; `RECOVERED SMOKE OK` is the explicit recovery result.
+Use the fixed worktree for new campaigns. If the artifact audit fails, inspect its
+error before submitting new GPU work.
+
+## Full condition
+
 Review the exact plan and question for one full condition before submission:
 
 ```bash

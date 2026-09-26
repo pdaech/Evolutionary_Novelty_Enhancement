@@ -43,7 +43,6 @@ def make_plan(project, runtime, campaign_name, construct, commit):
     )
     require(construct in ADJECTIVES, "Unknown fitness construct")
     plan = full.make_plan(project, runtime, f"{campaign_name}-base", 2025, 1, "gpu30-022", commit)
-    campaign = runtime / "gemma_ga_outputs/smoke" / campaign_name
     experiment = f"{campaign_name}-cat-p4-g1-seed2025"
     run_name = f"gemma-{construct}-smoke_{experiment}"
     task = dict(
@@ -51,7 +50,9 @@ def make_plan(project, runtime, campaign_name, construct, commit):
         key=f"{construct}-cat-seed2025",
         experiment_id=experiment,
         run_name=run_name,
-        output_directory=str(campaign / "results" / run_name),
+        output_directory=str(
+            Path(plan["environment"]["BASE_PATH"]) / "results/simulations" / run_name
+        ),
         prompt="a cat",
         seed=2025,
         expected_records=8,
@@ -287,6 +288,45 @@ def status(campaign, verify=False):
     print(f"SMOKE OK: {plan['construct']}, 8/8 valid scores, 4 images in each generation 0 and 1")
 
 
+def recover_audit(campaign):
+    """Audit c45162a's existing output without editing its plan or rerunning inference."""
+    request = read_json(campaign / "submission_request.json")
+    plan = verified_plan(campaign, request["command"][-1])
+    require(
+        plan["generator_commit"] == "c45162a93971be8ec3d565356915b29d067c8552",
+        "Audit recovery only applies to the original smoke path bug",
+    )
+    task = plan["tasks"][0]
+    require(
+        Path(task["output_directory"]) == campaign / "results" / task["run_name"],
+        "Not the known smoke output path mismatch",
+    )
+    command = full.inference_command(plan, task)
+    options = dict(zip(command[3::2], command[4::2], strict=True))
+    require(
+        task["run_name"] == f"{options['--id']}_{options['--experiment_id']}",
+        "Smoke output name differs from generator command",
+    )
+    actual = Path(plan["environment"]["BASE_PATH"]) / options["--directory"] / task["run_name"]
+    corrected_task = dict(task, output_directory=str(actual))
+    report = audit(dict(plan, tasks=[corrected_task]))
+    report.update(
+        recovery="smoke-output-path-c45162a",
+        original_plan_sha256=sha256(campaign / "plan.json"),
+        generator_commit=plan["generator_commit"],
+        declared_output_directory=task["output_directory"],
+        actual_output_directory=str(actual),
+        audit_script_sha256=sha256(Path(__file__)),
+    )
+    destination = campaign / "audit-recovery.json"
+    if destination.exists():
+        require(read_json(destination) == report, "Recovered smoke audit or artifacts changed")
+    else:
+        full.save_json(destination, report)
+    print(f"RECOVERED SMOKE OK: {plan['construct']}, 8/8 valid scores, generations 0 and 1")
+    print(f"Existing images and noise verified; no inference performed.\nAudit: {destination}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
@@ -295,7 +335,7 @@ def main():
         sub.add_argument("--runtime-root", type=Path, required=True)
         sub.add_argument("--campaign", required=True)
         sub.add_argument("--construct", choices=list(ADJECTIVES), required=True)
-    for action in ("run-job", "status", "verify"):
+    for action in ("run-job", "status", "verify", "recover-audit"):
         sub = commands.add_parser(action)
         sub.add_argument("--campaign", type=Path, required=True)
         if action == "run-job":
@@ -317,6 +357,8 @@ def main():
             submit(plan, campaign)
     elif args.action == "run-job":
         run_job(args.campaign, args.sha256)
+    elif args.action == "recover-audit":
+        recover_audit(args.campaign)
     else:
         status(args.campaign, verify=args.action == "verify")
 
