@@ -54,6 +54,58 @@ remain reserved until completion. Eight GPUs therefore do not guarantee a
 25% reduction in elapsed time versus six. No scoring, generation or audit
 settings change. Recovery uses the GPU count in the immutable campaign plan.
 
+## Remaining five conditions on a shared eight-GPU queue
+
+After novelty was verified complete (18 runs, 55,800 observations), the user
+requested the shortest total runtime with eight available GPUs. Use the new
+`preview-remaining` / `submit-remaining` commands for unusualness, uncommonness,
+uniqueness, originality and innovation together. Novelty is excluded. This is
+90 independent trajectories and 279,000 image observations; every trajectory
+still has population 100 and generations 0–30 at seed 2025, 2026 or 2027.
+
+Four two-GPU Slurm allocations provide eight single-GPU workers on gpu2,
+gpu30-022, with a five-day limit. Each free worker atomically claims the next
+whole trajectory from one interleaved queue. A condition's slowest run no longer
+blocks the start of other conditions. Each trajectory starts its own generator
+process with its condition's exact question, seed and pinned model settings;
+generation, batch sizes and scoring code are unchanged. Models are loaded per
+trajectory as before. This improves scheduling; it is not a benchmark of a new
+generation-only/scoring-only service architecture.
+
+For equal-duration runs, the queue needs about 12 run-lengths versus 15 when
+five 18-run conditions are executed separately, an idealized 20% reduction.
+Real gains depend on run duration variation, queue delays, loading and storage.
+All four allocations retain the shared completion barrier, including the final
+short tail when fewer than eight trajectories remain.
+
+Create a separate worktree at the supplied reviewed commit, preserving the
+57df058 checkout that produced novelty. With `CODE`, `ROOT` and `PYTHON_EXE`
+pointing to that new checkout and the existing runtime/environment:
+
+```bash
+CAMPAIGN_NAME=thesis6-fitness-remaining5-8gpu-v1
+"$PYTHON_EXE" "$CODE/cluster/thesis_replicates.py" preview-remaining \
+    --runtime-root "$ROOT" --campaign "$CAMPAIGN_NAME"
+"$PYTHON_EXE" "$CODE/cluster/thesis_replicates.py" submit-remaining \
+    --runtime-root "$ROOT" --campaign "$CAMPAIGN_NAME"
+```
+
+The immutable schema-5 plan stores all conditions, exact questions and 90 task
+identities. Output run names contain the construct. Each task's completion
+receipt retains its construct and full artifact hashes. The combined campaign
+is under `gemma_ga_outputs/submissions/$CAMPAIGN_NAME`, while its artifact
+triplets remain under `gemma_ga_outputs/results/simulations/<run_name>`.
+Each batch records exclusive task claims under `batches/batch-NNN/claims/`.
+Claims are never cleared while workers run, including after a failed task.
+Invalid ratings and application errors require investigation; the existing
+signal-9 attempt policy remains unchanged.
+
+Use the usual `status`, `verify` and `recover` commands with the combined campaign
+path. Recovery first refuses live prior jobs, rechecks retained artifact hashes,
+then starts a fresh batch with fresh claims for unfinished tasks. Complete tasks
+are skipped, and interrupted trajectories follow the same audited restart policy.
+A successful final verification reports 279,000 observations and 90 runs.
+
 ## Keep the previous generator checkout available
 
 The existing creativity campaign pins generator commit `661ced6`. Create a

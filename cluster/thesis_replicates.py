@@ -28,6 +28,8 @@ import thesis_full as full
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.gemma_constructs import ADJECTIVES, scoring_prompt  # noqa: E402
 
+REMAINING_CONSTRUCTS = tuple(name for name in ADJECTIVES if name != "novelty")
+
 
 def require(condition, message):
     if not condition:
@@ -166,6 +168,52 @@ def group_count(plan):
     return plan.get("gpu_count", 6) // 2
 
 
+def make_remaining_plan(project, runtime, campaign, commit):
+    """One eight-GPU work queue for all 90 remaining independent trajectories."""
+    plans = [
+        make_construct_plan(
+            project, runtime, campaign, [2025, 2026, 2027], commit, construct, gpus=8
+        )
+        for construct in REMAINING_CONSTRUCTS
+    ]
+    plan = dict(plans[0])
+    for key in ("construct", "scoring_prompt", "run_id"):
+        del plan[key]
+    plan.update(
+        schema_version=5,
+        kind="multi-construct-work-queue",
+        scheduling="dynamic-eight-gpu-shared-barrier",
+        constructs=list(REMAINING_CONSTRUCTS),
+        scoring_prompts={name: scoring_prompt(name) for name in REMAINING_CONSTRUCTS},
+        options=dict(full.OPTIONS, evaluator="gemma-construct"),
+    )
+    tasks = []
+    # Interleave conditions so the queue does not pause at condition boundaries.
+    for index in range(18):
+        for construct, source in zip(REMAINING_CONSTRUCTS, plans, strict=True):
+            task = dict(source["tasks"][index], construct=construct)
+            for field in ("lane", "array_index", "wave_index"):
+                task.pop(field, None)
+            tasks.append(task)
+    plan["tasks"] = tasks
+    return plan
+
+
+def task_plan(plan, task):
+    if plan.get("kind") != "multi-construct-work-queue":
+        return plan
+    construct = task["construct"]
+    require(construct in plan["constructs"], "Unexpected task fitness condition")
+    return dict(
+        plan,
+        kind="six-gpu-fitness-construct",
+        construct=construct,
+        scoring_prompt=plan["scoring_prompts"][construct],
+        run_id=f"gemma-{construct}",
+        options=dict(plan["options"], gemma_fitness_construct=construct),
+    )
+
+
 def verified_plan(campaign, digest=None):
     path = Path(campaign) / "plan.json"
     if digest is not None:
@@ -173,6 +221,15 @@ def verified_plan(campaign, digest=None):
     plan = read_json(path)
     if plan.get("kind") == "six-gpu-replicates" and plan.get("schema_version") == 2:
         require(plan["options"] == full.OPTIONS, "Scientific settings changed")
+    elif plan.get("kind") == "multi-construct-work-queue":
+        expected = make_remaining_plan(
+            Path(plan["project"]),
+            Path(plan["environment"]["BASE_PATH"]).parent,
+            plan["campaign"],
+            plan["generator_commit"],
+        )
+        expected["python"] = plan["python"]
+        require(plan == expected, "Remaining-conditions plan/settings changed")
     else:
         require(
             plan.get("kind") == "six-gpu-fitness-construct"
@@ -233,6 +290,7 @@ def audit_artifacts(plan, task):
     """Require all populations, finite fitness, exact ZIP coverage, CRCs and JPEGs."""
     from PIL import Image
 
+    plan = task_plan(plan, task)
     stem = Path(task["output_directory"]) / task["run_name"]
     paths = {
         extension: Path(f"{stem}.{extension}") for extension in ("json", "csv", "zip")
@@ -400,7 +458,7 @@ def run_task(plan, campaign, task):
             "array_job_id": os.environ.get("SLURM_ARRAY_JOB_ID"),
         }
         full.save_json(receipt, record)
-        current_plan = dict(plan, seed=task["seed"])
+        current_plan = dict(task_plan(plan, task), seed=task["seed"])
         print(f"START {task['key']} attempt {number}, generations 0-30", flush=True)
         try:
             code = full.execute_task(current_plan, current)
@@ -438,11 +496,44 @@ def run_task(plan, campaign, task):
     return 1
 
 
-def run_lane(plan, campaign, lane):
+def claimed_tasks(plan, campaign, batch_id, lane):
+    require(
+        batch_id is not None and re.fullmatch(r"batch-[0-9]{3,}", batch_id),
+        "Dynamic workers require a valid submission batch",
+    )
+    claims = campaign / "batches" / batch_id / "claims"
+    claims.mkdir(parents=True, exist_ok=True)
+    for task in plan["tasks"]:
+        if completion_path(campaign, task).exists():
+            continue
+        claim = claims / task["key"]
+        try:
+            claim.mkdir()  # Atomic exclusive claim on the shared filesystem.
+        except FileExistsError:
+            continue
+        full.save_json(
+            claim / "owner.json",
+            {"lane": lane, "job_id": os.environ.get("SLURM_JOB_ID"), "time": now()},
+        )
+        yield task
+
+
+def run_lane(plan, campaign, lane, batch_id=None):
     require(lane in range(group_count(plan) * 2), "Invalid lane")
     failed = False
     with lane_lock(campaign, lane):
-        for task in (item for item in plan["tasks"] if item["lane"] == lane):
+        if plan.get("kind") == "multi-construct-work-queue":
+            receipt = read_json(
+                campaign / "batches" / str(batch_id) / "submission.json"
+            )
+            require(
+                str(receipt["job_id"]) == os.environ.get("SLURM_ARRAY_JOB_ID"),
+                "Dynamic worker does not match its submission batch",
+            )
+            tasks = claimed_tasks(plan, campaign, batch_id, lane)
+        else:
+            tasks = (item for item in plan["tasks"] if item["lane"] == lane)
+        for task in tasks:
             try:
                 failed = bool(run_task(plan, campaign, task)) or failed
             except Exception:
@@ -527,6 +618,8 @@ def run_group(campaign, digest, batch_id, index):
                 "--index",
                 str(lane),
             ]
+            if plan.get("kind") == "multi-construct-work-queue":
+                command.extend(["--batch", batch_id])
             processes.append(subprocess.Popen(command))
     except Exception:
         traceback.print_exc()
@@ -586,6 +679,9 @@ def run_group(campaign, digest, batch_id, index):
 
 def sbatch_command(plan, campaign, batch, digest):
     groups = group_count(plan)
+    label = plan.get(
+        "construct", "remaining" if plan.get("constructs") else "replicates"
+    )
     return [
         "sbatch",
         "--parsable",
@@ -601,7 +697,7 @@ def sbatch_command(plan, campaign, batch, digest):
         "--time=5-00:00:00",
         "--no-requeue",
         "--export=ALL",
-        f"--job-name=gemma-{plan.get('construct', 'replicates')}",
+        f"--job-name=gemma-{label}",
         "--nodelist=gpu30-022",
         f"--chdir={plan['project']}",
         f"--output={batch}/job-%A_%a.out",
@@ -682,6 +778,17 @@ def recover(campaign):
             not all(completion_path(campaign, task).exists() for task in plan["tasks"]),
             "All runs already have completion audits; use verify instead",
         )
+        if plan.get("kind") == "multi-construct-work-queue":
+            # Queue workers skip completed tasks; validate them before resubmission.
+            for task in plan["tasks"]:
+                path = completion_path(campaign, task)
+                if path.exists():
+                    report = read_json(path)
+                    checked = audit_artifacts(plan, report["task"])
+                    require(
+                        checked["files"] == report["files"],
+                        "Retained artifact hashes changed after audit",
+                    )
         submit_batch(plan, campaign)
     finally:
         lock.rmdir()
@@ -748,18 +855,29 @@ def main():
         sub.add_argument("--campaign", required=True)
         sub.add_argument("--construct", choices=list(ADJECTIVES), required=True)
         sub.add_argument("--gpus", type=int, choices=(6, 8), default=6)
+    for action in ("preview-remaining", "submit-remaining"):
+        sub = commands.add_parser(action)
+        sub.add_argument("--runtime-root", type=Path, required=True)
+        sub.add_argument("--campaign", required=True)
     for action in ("status", "verify", "recover", "run-group", "run-lane"):
         sub = commands.add_parser(action)
         sub.add_argument("--campaign", type=Path, required=True)
         if action in ("run-group", "run-lane"):
             sub.add_argument("--sha256", required=True)
             sub.add_argument("--index", type=int, required=True)
-        if action == "run-group":
-            sub.add_argument("--batch", required=True)
+        if action in ("run-group", "run-lane"):
+            sub.add_argument("--batch", required=action == "run-group")
     args = parser.parse_args()
-    if args.action in ("preview", "submit", "preview-construct", "submit-construct"):
+    if args.action.startswith(("preview", "submit")):
         project = Path(__file__).resolve().parents[1]
-        if args.action.endswith("-construct"):
+        if args.action.endswith("-remaining"):
+            plan = make_remaining_plan(
+                project,
+                args.runtime_root.resolve(),
+                args.campaign,
+                full.clean_commit(project),
+            )
+        elif args.action.endswith("-construct"):
             plan = make_construct_plan(
                 project,
                 args.runtime_root.resolve(),
@@ -779,7 +897,8 @@ def main():
             )
         campaign = args.runtime_root / "gemma_ga_outputs/submissions" / args.campaign
         print(
-            f"6 prompts x {len(plan['seeds'])} seeds x 100 images x 31 generations "
+            f"{len(plan.get('constructs', [None]))} condition(s) x 6 prompts x "
+            f"{len(plan['seeds'])} seeds x 100 images x 31 generations "
             f"= {len(plan['tasks']) * 3100:,} observations\n"
             f"Seeds: {plan['seeds']}; {group_count(plan)} separate jobs, "
             "2 GPUs each; five-day limit\n"
@@ -790,6 +909,10 @@ def main():
                 f"Fitness condition: {plan['construct']}\n"
                 f"Exact Gemma question: {plan['scoring_prompt']}"
             )
+        if plan.get("constructs"):
+            print("Shared queue: next available run goes to the next free GPU.")
+            for construct, prompt in plan["scoring_prompts"].items():
+                print(f"{construct}: {prompt}")
         if args.action.startswith("submit"):
             campaign.mkdir(parents=True, exist_ok=False)
             full.save_json(campaign / "plan.json", plan)
@@ -806,7 +929,10 @@ def main():
         return run_group(args.campaign, args.sha256, args.batch, args.index)
     elif args.action == "run-lane":
         return run_lane(
-            verified_plan(args.campaign, args.sha256), args.campaign, args.index
+            verified_plan(args.campaign, args.sha256),
+            args.campaign,
+            args.index,
+            args.batch,
         )
     elif args.action == "recover":
         recover(args.campaign)
