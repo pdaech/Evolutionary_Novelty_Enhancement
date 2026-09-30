@@ -136,7 +136,7 @@ EXPORTS="$ROOT/gemma_ga_outputs/exports"
 OUTPUT_ZIP="$EXPORTS/fitness-milestones-contact-sheets-v1.zip"
 mkdir -p "$EXPORTS"
 sbatch --parsable --account=dldevel --partition=gpu2 --qos=gpu2 \
-    --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=12:00:00 \
+    --gres=gpu:1 --cpus-per-task=2 --mem=16G --time=12:00:00 \
     --job-name=fitness-contact-sheets \
     --output="$EXPORTS/contact-sheets-%j.out" \
     --error="$EXPORTS/contact-sheets-%j.err" \
