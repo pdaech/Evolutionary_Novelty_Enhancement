@@ -106,6 +106,50 @@ then starts a fresh batch with fresh claims for unfinished tasks. Complete tasks
 are skipped, and interrupted trajectories follow the same audited restart policy.
 A successful final verification reports 279,000 observations and 90 runs.
 
+## Compact visual review of all six conditions
+
+After both campaigns have passed `verify`, use
+`cluster/export_fitness_contact_sheets.py` to make a portable ZIP. It creates
+four 10×10 JPEG contact sheets for every condition/prompt/seed run: generations
+0, 10, 20 and 30. There are 432 sheets showing all 43,200 milestone image
+observations. `index.html` links to the sheets; `index.csv` maps each thumbnail
+rank to its exact generation, score, candidate ID, original filename, accepted
+source ZIP member and image SHA-256. Original images and noise tensors remain
+in the verified source archives; the package is intentionally a small preview.
+Repeated elites remain visible in each saved generation.
+
+The exporter requires both complete campaign manifests and uses their accepted
+`completed/<key>.json` attempt receipts. It validates the 108 unique condition/
+prompt/seed combinations, all 31 generations and population 100, CSV and JSON
+hashes, model construct and seed, and the CRC/1024×1024 format of every selected
+image. ZIP SHA-256 values are carried from the verified completion receipts;
+the exporter does not rehash all source ZIP bytes. It refuses to overwrite an
+existing output and writes a `.partial` archive before atomic publication.
+
+Keep the novelty and remaining-five producing worktrees at their submitted
+commits. Fetch the reviewed exporter revision into a separate worktree. Then:
+
+```bash
+NOVELTY="$ROOT/gemma_ga_outputs/submissions/thesis6-fitness-novelty-8gpu-seeds2025-2027-v1"
+REMAINING="$ROOT/gemma_ga_outputs/submissions/thesis6-fitness-remaining5-8gpu-v1"
+EXPORTS="$ROOT/gemma_ga_outputs/exports"
+OUTPUT_ZIP="$EXPORTS/fitness-milestones-contact-sheets-v1.zip"
+mkdir -p "$EXPORTS"
+sbatch --parsable --account=dldevel --partition=gpu2 --qos=gpu2 \
+    --gres=gpu:1 --cpus-per-task=8 --mem=64G --time=12:00:00 \
+    --job-name=fitness-contact-sheets \
+    --output="$EXPORTS/contact-sheets-%j.out" \
+    --error="$EXPORTS/contact-sheets-%j.err" \
+    "$CODE/cluster/run_fitness_contact_sheets.sbatch" \
+    "$PYTHON_EXE" "$CODE/cluster/export_fitness_contact_sheets.py" \
+    "$NOVELTY" "$REMAINING" "$OUTPUT_ZIP"
+```
+
+The GPU request is needed for gpu2 scheduling; the export itself is CPU and
+filesystem work. On success stdout ends with `EXPORT OK`, 432 sheets and
+43,200 indexed images. Copy the ZIP to a local computer, unzip it, and open
+`index.html` to browse every milestone sheet.
+
 ## Keep the previous generator checkout available
 
 The existing creativity campaign pins generator commit `661ced6`. Create a
